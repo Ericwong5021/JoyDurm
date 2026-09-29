@@ -1,0 +1,33 @@
+JoyDurm reuses open-source SceneView, Google Filament, AndroidX and HIDAPI.
+Their upstream licenses and notices remain applicable to the respective components.
+The Apache License 2.0 text is included at docs/APACHE-2.0.txt.
+The MIT license at LICENSE covers original JoyDurm code, not third-party dependencies.
+
+Gradle wrapper is distributed under Apache License 2.0.
+https://github.com/gradle/gradle/blob/v8.13.0/LICENSE
+
+SceneView / Filament / AndroidX: Apache License 2.0.
+https://github.com/sceneview/sceneview/blob/main/LICENSE
+https://github.com/google/filament/blob/main/LICENSE
+Filament v1.56.0 third-party license texts are bundled in
+app/src/main/assets/licenses/Filament-THIRD-PARTY-LICENSES.txt.
+https://android.googlesource.com/platform/frameworks/support/
+
+Python HIDAPI bindings and HIDAPI offer multiple license choices; JoyDurm selects
+the BSD-3-Clause option where applicable. These are installed separately for the
+desktop bridge, not included in the Android APK.
+https://github.com/trezor/cython-hidapi/blob/master/LICENSE-bsd.txt
+https://github.com/libusb/hidapi/blob/master/LICENSE-bsd.txt
+
+trimesh (development-only model generator): MIT.
+https://github.com/mikedh/trimesh/blob/main/LICENSE.md
+
+Nintendo protocol is referenced from:
+https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering
+JoyDurm's implementation is original; no third-party driver source is included.
+
+ARCore and Google Play Services for AR are proprietary Google runtime dependencies.
+https://developers.google.com/ar/develop
+
+Original bundled GLB geometry: CC0 1.0 Universal.
+See app/src/main/assets/models/LICENSE.txt.
