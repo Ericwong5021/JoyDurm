@@ -9,7 +9,8 @@ import org.json.JSONObject
 class SettingsStore(context: Context) {
     val prefs=context.getSharedPreferences("joydurm",Context.MODE_PRIVATE)
     private fun vec(v: Vec3)=JSONArray(listOf(v.x,v.y,v.z))
-    private fun readVec(a: JSONArray)=Vec3(a.getDouble(0),a.getDouble(1),a.getDouble(2))
+    private fun finite(value: Double): Double { require(value.isFinite()); return value }
+    private fun readVec(a: JSONArray)=Vec3(finite(a.getDouble(0)),finite(a.getDouble(1)),finite(a.getDouble(2)))
     fun save(engine: DrumEngine) {
         val all=JSONObject()
         synchronized(engine) {
@@ -24,19 +25,22 @@ class SettingsStore(context: Context) {
         prefs.edit().putString("roles",all.toString()).putFloat("hatRange",engine.hatRange.toFloat()).putFloat("hatSign",engine.hatSign.toFloat()).apply()
     }
     fun load(engine: DrumEngine) {
-        runCatching {
-            val all=JSONObject(prefs.getString("roles","{}")!!)
-            engine.roles.forEach { (r,s) -> all.optJSONObject(r.name)?.let { o ->
-                s.device=o.optString("device").takeIf { it.isNotBlank() && it!="null" }
-                s.axis=o.optInt("axis",0).coerceIn(0,2); s.sign=if(o.optDouble("sign",1.0)<0)-1.0 else 1.0
-                s.stroke.threshold=o.optDouble("threshold",2.2).coerceIn(0.2,30.0)
-                s.stroke.cooldownNs=o.optLong("cooldown",90_000_000).coerceIn(30_000_000,500_000_000)
-                o.optJSONArray("neutral")?.let { s.neutral=Attitude(it.getDouble(0),it.getDouble(1),it.getDouble(2)) }
-                if(o.has("bias")) s.calibration=Calibration(readVec(o.getJSONArray("bias")),readVec(o.getJSONArray("gravity")),o.optInt("samples",100))
-                o.optJSONArray("targets")?.let { list -> s.targets=(0 until list.length()).mapNotNull { i -> runCatching { val t=list.getJSONObject(i); Target(Drum.valueOf(t.getString("drum")),t.getDouble("yaw"),t.getDouble("pitch")) }.getOrNull() }.toMutableList() }
-            } }
-            engine.hatRange=prefs.getFloat("hatRange",0.52f).toDouble().coerceIn(0.1,1.5)
-            engine.hatSign=prefs.getFloat("hatSign",1f).toDouble()
+        val all=runCatching { JSONObject(prefs.getString("roles","{}")!!) }.getOrDefault(JSONObject())
+        synchronized(engine) {
+            engine.roles.forEach { (r,s) -> all.optJSONObject(r.name)?.let { o -> runCatching {
+                val device=o.optString("device").takeIf { it.isNotBlank() && it!="null" }
+                val axis=o.optInt("axis",0).coerceIn(0,2)
+                val sign=if(finite(o.optDouble("sign",1.0))<0)-1.0 else 1.0
+                val threshold=finite(o.optDouble("threshold",2.2)).coerceIn(0.2,30.0)
+                val cooldown=o.optLong("cooldown",90_000_000).coerceIn(30_000_000,500_000_000)
+                val neutral=o.optJSONArray("neutral")?.let { Attitude(finite(it.getDouble(0)),finite(it.getDouble(1)),finite(it.getDouble(2))) } ?: s.neutral
+                val calibration=if(o.has("bias"))Calibration(readVec(o.getJSONArray("bias")),readVec(o.getJSONArray("gravity")),o.optInt("samples",100).coerceAtLeast(1)) else null
+                val targets=o.optJSONArray("targets")?.let { list -> (0 until list.length()).map { i -> val t=list.getJSONObject(i); Target(Drum.valueOf(t.getString("drum")),finite(t.getDouble("yaw")),finite(t.getDouble("pitch"))) }.toMutableList() }
+                s.device=device; s.axis=axis; s.sign=sign; s.stroke.threshold=threshold; s.stroke.cooldownNs=cooldown
+                s.neutral=neutral; s.calibration=calibration; if(targets!=null)s.targets=targets
+            } } }
+            engine.hatRange=prefs.getFloat("hatRange",0.52f).takeIf { it.isFinite() }?.toDouble()?.coerceIn(0.1,1.5) ?: 0.52
+            engine.hatSign=if((prefs.getFloat("hatSign",1f).takeIf { it.isFinite() } ?: 1f)<0)-1.0 else 1.0
         }
     }
     fun saveScene(scene: DrumScene) {
@@ -47,9 +51,13 @@ class SettingsStore(context: Context) {
     fun loadScene(scene: DrumScene) {
         runCatching {
             val o=JSONObject(prefs.getString("layout","{}")!!)
-            scene.kitScale=o.optDouble("scale",1.0).toFloat().coerceIn(0.3f,2f)
-            scene.kitYaw=o.optDouble("yaw",0.0).toFloat()
-            Drum.entries.forEach { d -> o.optJSONArray(d.name)?.let { scene.setPiecePosition(d,it.getDouble(0).toFloat(),it.getDouble(1).toFloat(),it.getDouble(2).toFloat()) } }
+            val scale=finite(o.optDouble("scale",1.0)).coerceIn(0.3,2.0).toFloat()
+            val yaw=finite(o.optDouble("yaw",0.0)).coerceIn(-360.0,360.0).toFloat()
+            val positions=Drum.entries.filter { it!=Drum.CHICK }.mapNotNull { d -> o.optJSONArray(d.name)?.let { a ->
+                d to floatArrayOf(finite(a.getDouble(0)).coerceIn(-3.0,3.0).toFloat(),finite(a.getDouble(1)).coerceIn(0.0,3.0).toFloat(),finite(a.getDouble(2)).coerceIn(-3.0,3.0).toFloat())
+            } }
+            scene.kitScale=scale; scene.kitYaw=yaw
+            positions.forEach { (d,p) -> scene.setPiecePosition(d,p[0],p[1],p[2]) }
         }
     }
 }

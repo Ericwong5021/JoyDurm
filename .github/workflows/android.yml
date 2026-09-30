@@ -31,7 +31,7 @@ jobs:
       - name: Verify wrapper and build
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+          ./gradlew --no-daemon testDebugUnitTest lintDebug lintRelease assembleDebug assembleRelease
       - name: Bridge protocol tests
         run: python3 -m unittest discover -s tools/bridge -v
       - name: Package installable APK
@@ -52,9 +52,7 @@ jobs:
           path: |
             app/build/reports/tests/
             app/build/reports/lint-results-debug.*
-      - name: Build unsigned release for isolated signing
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        run: ./gradlew --no-daemon assembleRelease
+            app/build/reports/lint-results-release.*
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         with:

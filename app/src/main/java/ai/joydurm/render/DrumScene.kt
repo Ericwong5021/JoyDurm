@@ -41,8 +41,11 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
     private var hatBase=Position()
     private var beaterNode: Node?=null
     var openness=0f
+        set(value) { require(value.isFinite()); field=value.coerceIn(0f,1f) }
     var kitScale=1f
+        set(value) { require(value.isFinite()); field=value.coerceIn(0.3f,2f) }
     var kitYaw=0f
+        set(value) { require(value.isFinite()); field=value.coerceIn(-360f,360f) }
     var editMode=false
     var selected=Drum.SNARE
     var placed=!ar; private set
@@ -144,6 +147,7 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
         hatTop?.position=Position(hatBase.x,hatBase.y+openness.coerceIn(0f,1f)*0.09f,hatBase.z)
     }
     fun setPiecePosition(drum: Drum,x: Float,y: Float,z: Float) {
+        require(x.isFinite() && y.isFinite() && z.isFinite()) { "鼓件坐标无效" }
         val position=Position(x,y,z)
         pieces[drum]?.position=position; bases[drum]=position
         if(heads[drum]===pieces[drum]) { headBase[drum]=position; if(drum==Drum.HAT)hatBase=position }
@@ -158,15 +162,23 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
         val node=ModelNode(view.modelLoader.createModelInstance(file),autoAnimate=false)
         val required=Drum.entries.filter { it!=Drum.CHICK }
         val mapping=required.associateWith { d -> node.nodes.firstOrNull { it.name.equals(d.name,true) } }
-        if(mapping.values.any { it==null }) { view.modelLoader.destroyModel(node.model); error("GLB 需包含 kick / snare / tom1 / tom2 / floor / hat / crash / ride 八个独立节点") }
+        val roots=mapping.values.filterNotNull().toSet()
+        val valid=mapping.all { (d,n) -> n!=null && node.nodes.count { it.name.equals(d.name,true) }==1 } &&
+            roots.all { root -> var parent=root.parent; var independent=true; while(parent!=null) { if(parent in roots)independent=false; parent=parent.parent }; independent } &&
+            node.nodes.all { n -> listOf(n.position.x,n.position.y,n.position.z,n.rotation.x,n.rotation.y,n.rotation.z,n.scale.x,n.scale.y,n.scale.z).all { it.isFinite() } }
+        if(!valid) { view.modelLoader.destroyModel(node.model); error("GLB 需包含唯一且互不嵌套的 kick / snare / tom1 / tom2 / floor / hat / crash / ride 节点，坐标须为有限数字") }
         imported?.let { kit.removeChildNode(it); view.modelLoader.destroyModel(it.model) }
         if(imported==null) kit.childNodes.toList().forEach { destroyTree(it) }
-        pieces.clear(); heads.clear(); headBase.clear(); hatTop=null; pulses.clear()
+        pieces.clear(); bases.clear(); heads.clear(); headBase.clear(); headRotation.clear(); headScale.clear(); hatTop=null; pulses.clear()
         imported=node; kit.addChildNode(node)
         mapping.forEach { (d,n) ->
             n!!.name="drum:${d.name}"; pieces[d]=n; bases[d]=n.position
             val suffix=if(d in listOf(Drum.HAT,Drum.CRASH,Drum.RIDE))"_cymbal" else "_head"
-            heads[d]=node.nodes.firstOrNull { it.name.equals(d.name+suffix,true) } ?: n
+            heads[d]=node.nodes.firstOrNull { candidate ->
+                var parent=candidate.parent; var descendant=false
+                while(parent!=null) { if(parent===n)descendant=true; parent=parent.parent }
+                candidate.name.equals(d.name+suffix,true) && descendant
+            } ?: n
             headBase[d]=heads[d]!!.position
         }
         hatTop=heads[Drum.HAT]; hatBase=hatTop?.position ?: Position()

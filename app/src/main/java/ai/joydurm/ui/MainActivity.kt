@@ -27,6 +27,8 @@ import java.io.File
 import java.security.SecureRandom
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.AtomicMoveNotSupportedException
+import java.util.concurrent.Executors
 import kotlin.math.*
 
 class MainActivity: ComponentActivity() {
@@ -43,11 +45,13 @@ class MainActivity: ComponentActivity() {
     private var bpm=100
     private var metronome=false
     private var resumed=false
-    private var importDrum=Drum.SNARE
+    private data class ImportRequest(val model: Boolean,val drum: Drum,val bank: Int)
+    private var pendingImport: ImportRequest?=null
+    private var importing=false
+    private val importWorker=Executors.newSingleThreadExecutor()
     private var arRequested=false
     private var arInstallRequested=false
     private var activeCalibrationDialog: AlertDialog?=null
-    private var importModel=false
     private var hitCount=0
     private val permissions=registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
         if(arRequested && granted[Manifest.permission.CAMERA]==true) enableAr()
@@ -55,28 +59,62 @@ class MainActivity: ComponentActivity() {
         arRequested=false; if(::hub.isInitialized)hub.refresh()
     }
     private val importer=registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if(uri!=null) {
-            val limit=if(importModel)20_000_000 else 1_000_000
-            val target=File(filesDir,if(importModel)"imported.glb" else "custom-${audio.kit}-${importDrum.name}.wav")
-            val temporary=File(filesDir,if(importModel)"pending.glb" else "pending.wav")
-            runCatching {
-                contentResolver.openInputStream(uri)!!.use { input -> temporary.outputStream().use { out ->
-                    val buffer=ByteArray(8192); var total=0
-                    while(true) { val count=input.read(buffer); if(count<0)break; total+=count; require(total<=limit){"文件过大"}; out.write(buffer,0,count) }
-                } }
-                if(importModel) scene.importModel(temporary) else WaveValidator.validate(temporary.readBytes())
-                Files.move(temporary.toPath(),target.toPath(),StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE)
-                if(importModel) { store.prefs.edit().putBoolean("customModel",true).remove("layout").apply(); store.saveScene(scene); showStatus("模型已加载") }
-                else { audio.importWav(target,importDrum); store.prefs.edit().putString("wav-${audio.kit}-${importDrum.name}",target.path).apply(); showStatus("${importDrum.label} 的 WAV 已导入") }
-            }.onFailure { showStatus("导入失败：${it.message}"); temporary.delete() }
+        val request=pendingImport; pendingImport=null
+        if(uri!=null && request!=null) {
+            importing=true; showStatus("正在读取并检查文件…")
+            importWorker.execute {
+                val temporary=runCatching { File.createTempFile("import-",if(request.model)".glb" else ".wav",cacheDir) }.getOrElse { error -> main.post { importing=false; showStatus("无法创建导入文件：${error.message}") }; return@execute }
+                val result=runCatching {
+                    val limit=if(request.model)20_000_000 else 1_000_000
+                    requireNotNull(contentResolver.openInputStream(uri)) { "无法读取文件" }.use { input -> temporary.outputStream().use { out ->
+                        val buffer=ByteArray(8192); var total=0
+                        while(true) { val count=input.read(buffer); if(count<0)break; total+=count; require(total<=limit){"文件过大"}; out.write(buffer,0,count) }
+                    } }
+                    if(!request.model) WaveValidator.validate(temporary.readBytes())
+                }
+                main.post {
+                    if(isDestroyed) { temporary.delete(); return@post }
+                    val previousModel=File(store.prefs.getString("modelPath",File(filesDir,"imported.glb").path)!!)
+                    val target=File(filesDir,if(request.model)"imported-${SystemClock.elapsedRealtimeNanos()}.glb" else "custom-${request.bank}-${request.drum.name}-${SystemClock.elapsedRealtimeNanos()}.wav")
+                    runCatching {
+                        result.getOrThrow()
+                        if(request.model) { store.saveScene(scene); scene.importModel(temporary) }
+                        try { Files.move(temporary.toPath(),target.toPath(),StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE) }
+                        catch(_: AtomicMoveNotSupportedException) { Files.move(temporary.toPath(),target.toPath(),StandardCopyOption.REPLACE_EXISTING) }
+                        if(request.model) { store.prefs.edit().putBoolean("customModel",true).putString("modelPath",target.path).remove("layout").apply(); store.saveScene(scene); if(previousModel!=target)previousModel.delete(); showStatus("模型已加载") }
+                        else {
+                            val key="wav-${request.bank}-${request.drum.name}"
+                            audio.importWav(target,request.drum,request.bank) { success ->
+                                if(success) {
+                                    val previous=store.prefs.getString(key,null)
+                                    store.prefs.edit().putString(key,target.path).apply()
+                                    previous?.let { if(it!=target.path)File(it).delete() }
+                                    showStatus("${audio.kitNames[request.bank]} · ${request.drum.label} 音色已加载")
+                                } else { target.delete(); showStatus("音色加载失败，保留原音色") }
+                            }
+                            showStatus("正在加载 ${audio.kitNames[request.bank]} · ${request.drum.label}…")
+                        }
+                    }.onFailure { target.delete(); if(request.model) { val old=if(previousModel.exists() && store.prefs.getBoolean("customModel",false))previousModel else File(cacheDir,"joydurm-kit.glb"); runCatching { scene.importModel(old); store.loadScene(scene) } }; showStatus("导入失败：${it.message}") }
+                    temporary.delete(); importing=false
+                }
+            }
         }
+    }
+    private fun launchImport(request: ImportRequest) {
+        if(importing || pendingImport!=null) { showStatus("请先完成当前导入"); return }
+        pendingImport=request
+        importer.launch(if(request.model)arrayOf("model/gltf-binary","application/octet-stream") else arrayOf("audio/wav","audio/x-wav","application/octet-stream"))
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         store=SettingsStore(this)
+        bpm=store.prefs.getInt("bpm",100).coerceIn(30,240)
+        arInstallRequested=savedInstanceState?.getBoolean("arInstallRequested") ?: false
+        arRequested=savedInstanceState?.getBoolean("arRequested") ?: false
+        if(savedInstanceState?.containsKey("pendingModel")==true) pendingImport=ImportRequest(savedInstanceState.getBoolean("pendingModel"),Drum.valueOf(savedInstanceState.getString("pendingDrum",Drum.SNARE.name)),savedInstanceState.getInt("pendingBank",0).coerceIn(0,2))
         audio=DrumAudio(this,::showStatus)
-        audio.kit=store.prefs.getInt("kit",0).coerceIn(0,2); audio.volume=store.prefs.getFloat("volume",0.8f)
+        audio.kit=store.prefs.getInt("kit",0).coerceIn(0,2); audio.volume=store.prefs.getFloat("volume",0.8f).takeIf { it.isFinite() }?.coerceIn(0f,1f) ?: 0.8f
         engine=DrumEngine { event ->
             audio.play(event)
             main.post { if(isDestroyed)return@post; if(::scene.isInitialized) scene.hit(event); hitCount++; if(::message.isInitialized) message.text="${event.drum.label} · 力度 ${(event.velocity*127).toInt()}" }
@@ -88,6 +126,7 @@ class MainActivity: ComponentActivity() {
             if(engine.roles[role]?.device==null && engine.roles.values.none { it.device==device }) engine.assign(role,device)
         } }
         buildUi(); buildScene(false)
+        if(!store.prefs.getBoolean("onboarded",false) && pendingImport==null && !arInstallRequested) main.post { if(!isDestroyed)onboardingDialog() }
         // Restore user samples after the built-in sample loader's serial work has begun.
         for(bank in 0..2) for(d in Drum.entries) store.prefs.getString("wav-$bank-${d.name}",null)?.let { path ->
             val f=File(path); if(f.exists()) runCatching { audio.importWav(f,d,bank) }
@@ -108,7 +147,7 @@ class MainActivity: ComponentActivity() {
         monitor=text("四个 Joy-Con 尚未绑定",13); side.addView(monitor)
         side.addView(text("HI-HAT OPEN",11,true))
         hatBar=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply { max=100 }; side.addView(hatBar)
-        side.addView(button("重新归中") { Role.entries.forEach { engine.recenter(it) }; store.save(engine); showStatus("姿态已归中；手柄朝向前方，左脚平放") })
+        side.addView(button("重新归中") { val count=Role.entries.count { role -> runCatching { synchronized(engine) { require(SystemClock.elapsedRealtimeNanos()-(engine.roles[role]?.latest?.timeNs ?: 0L) in 0..500_000_000L) { "没有实时数据" }; engine.recenter(role) } }.isSuccess }; store.save(engine); showStatus("已归中 $count/4 个角色；没有实时数据的角色已跳过") })
         side.addView(button("节拍器") { metronome=!metronome; main.removeCallbacks(tick); if(metronome) main.post(tick); showStatus(if(metronome)"节拍器 $bpm BPM" else "节拍器已关闭") })
         side.addView(text("触摸下方鼓垫也可演奏\n无需连接硬件",12))
         middle.addView(ScrollView(this).apply { addView(side) },LinearLayout.LayoutParams(dp(if(resources.configuration.screenWidthDp<600)130 else 190),-1))
@@ -120,9 +159,10 @@ class MainActivity: ComponentActivity() {
         root.addView(message); setContentView(root)
     }
     private fun buildScene(ar: Boolean) {
+        if(importing) { showStatus("模型或音色导入期间请稍后切换场景"); return }
         if(::scene.isInitialized) { store.saveScene(scene); sceneHost.removeAllViews(); scene.destroy() }
         scene=DrumScene(this,ar,{ engine.trigger(it) },::showStatus)
-        val custom=File(filesDir,"imported.glb")
+        val custom=File(store.prefs.getString("modelPath",File(filesDir,"imported.glb").path)!!)
         if(store.prefs.getBoolean("customModel",false) && custom.exists()) runCatching { scene.importModel(custom) }.onFailure { showStatus("自定义模型加载失败：${it.message}") }
         store.loadScene(scene); sceneHost.addView(scene.view,FrameLayout.LayoutParams(-1,-1))
         showStatus(if(ar)"扫描地面，然后点击摆放鼓组" else "3D 演奏模式 · 点击鼓件或使用鼓垫")
@@ -141,6 +181,17 @@ class MainActivity: ComponentActivity() {
             buildScene(true)
         } catch(e: Exception) { arInstallRequested=false; showStatus("AR 启动失败：${e.message}") }
     }
+    private fun onboardingDialog() {
+        val body=column()
+        body.addView(text("先用触摸鼓垫确认声音，再连接手柄。",18,true))
+        body.addView(text("1. 点击下方鼓垫，确认手机扬声器或有线耳机有声音。\n2. 在电脑运行桥接脚本，将四只 Joy-Con 的 IMU 数据发到手机；系统蓝牙已配对不代表收到 IMU。\n3. 进入设备 → 连接诊断，确认每只手柄的样本持续更新，再绑定左右手和左右脚。\n4. 进入校准，静置三秒、朝前归中，再绑定鼓件方向。\n5. 先用 3D 演奏；AR 需兼容设备、摄像头权限和地面扫描。",14))
+        body.addView(text("此版本尚未完成真实手机和四只 Joy-Con 的联合验证，请通过连接诊断确认实际数据。",13))
+        body.addView(button("打开设备与连接诊断") { devicesDialog() })
+        dialog("首次使用",body) { store.prefs.edit().putBoolean("onboarded",true).apply() }
+    }
+    private fun copy(value: String,label: String) {
+        getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText(label,value)); showStatus("$label 已复制")
+    }
     private fun devicesDialog() {
         val body=column()
         body.addView(text("原版 Switch Joy-Con · 四只手柄分别绑定左右手与左右脚。蓝牙配对由系统完成。",14))
@@ -148,27 +199,51 @@ class MainActivity: ComponentActivity() {
             if(Build.VERSION.SDK_INT>=31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=PackageManager.PERMISSION_GRANTED) permissions.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
             startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
         })
-        body.addView(text(hub.bondedNames().joinToString("\n").ifBlank { "暂无已配对设备" },12))
+        body.addView(button("首次使用步骤") { onboardingDialog() })
+        body.addView(text("系统已配对（不等于实时 IMU）\n"+hub.bondedNames().joinToString("\n").ifBlank { "暂无已配对设备，或尚未授权蓝牙访问" },12))
         val list=text("",13); body.addView(list)
-        fun refreshList() { hub.refresh(); list.text=hub.devices.values.joinToString("\n") { "${if(it.motion)"●" else "○"} ${it.name}\n${it.transport}${if(it.motion)"" else " · 无 IMU 数据"}" }.ifBlank { "未发现 Joy-Con；桥接收到数据后会自动出现" } }
+        fun refreshList() {
+            hub.refresh()
+            val diagnostic=hub.diagnostics(); val now=SystemClock.elapsedRealtimeNanos()
+            list.text="连接诊断\n本机 LAN：${diagnostic.lanAddresses.joinToString().ifBlank { "没有可用 IPv4，请连接 Wi-Fi" }}\n"+
+                "UDP：${if(diagnostic.bridgeRunning)"监听 ${diagnostic.bridgePort}" else "已关闭"} · 接受 ${diagnostic.acceptedPackets} / 拒绝 ${diagnostic.rejectedPackets}\n\n"+
+                diagnostic.devices.joinToString("\n\n") { device ->
+                    val age=device.lastSampleTimeNs?.let { ((now-it).coerceAtLeast(0)/1_000_000) }
+                    "${if(device.motion)"● 实时 IMU" else "○ 无新鲜 IMU"} ${device.name}\n${device.transport} · ${device.id}\n"+
+                        "${age?.let { "最后样本 ${it} ms 前" } ?: "尚未收到有效样本"} · 样本 ${device.sampleCount}"+
+                        (device.lastError?.let { "\n错误：$it" } ?: "")
+                }.ifBlank { "未发现输入设备；先运行桥接，确认 IP、端口和令牌一致" }
+        }
         refreshList(); body.addView(button("刷新连接状态") { refreshList() })
         Role.entries.forEach { role -> body.addView(button("绑定 ${role.label}") {
             val all=hub.devices.values.filter { it.motion }.sortedBy { it.id }
             if(all.isEmpty()) { showStatus("暂无提供 IMU 的设备"); return@button }
-            AlertDialog.Builder(this).setTitle(role.label).setItems(all.map { "${it.name} · ${it.transport}" }.toTypedArray()) { _,i -> engine.assign(role,all[i].id); store.save(engine) }.show()
+            AlertDialog.Builder(this).setTitle(role.label).setItems(all.map { "${it.name} · ${it.transport} · ${it.id}" }.toTypedArray()) { _,i -> engine.assign(role,all[i].id); store.save(engine) }.show()
         }) }
         body.addView(text("LAN 桥接（同一 Wi-Fi）",15,true))
+        val host=field("手机 LAN 地址（多网卡时选择 Wi-Fi 地址）",hub.diagnostics().lanAddresses.firstOrNull() ?: ""); body.addView(host)
         val port=field("UDP 端口",store.prefs.getInt("port",18185).toString()); body.addView(port)
-        val token=field("桥接令牌",store.prefs.getString("token",null) ?: newToken()); body.addView(token)
-        body.addView(button("复制令牌") { getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("JoyDurm token",token.text)); showStatus("令牌已复制") })
+        val bridgeToken=store.prefs.getString("token",null) ?: newToken().also { store.prefs.edit().putString("token",it).apply() }
+        val token=field("桥接令牌",bridgeToken); body.addView(token)
+        body.addView(button("复制令牌") { copy(token.text.toString(),"令牌") })
         body.addView(button("开启桥接监听") { runCatching {
-            val p=port.text.toString().toInt(); val t=token.text.toString(); hub.listenBridge(p,t)
-            store.prefs.edit().putInt("port",p).putString("token",t).putBoolean("bridge",true).apply()
+            val p=port.text.toString().toInt(); require(p in 1024..65535) { "端口须为 1024–65535" }; val t=token.text.toString(); require(t.matches(Regex("[A-Za-z0-9_-]{16,128}"))) { "令牌须为 16–128 位字母、数字、下划线或短横线" }; hub.listenBridge(p,t)
+            store.prefs.edit().putInt("port",p).putString("token",t).putBoolean("bridge",true).apply(); refreshList()
         }.onFailure { showStatus(it.message ?: "参数错误") } })
+        body.addView(button("关闭桥接监听") { hub.stopBridge(); store.prefs.edit().putBoolean("bridge",false).apply(); refreshList() })
+        body.addView(button("复制电脑桥接命令") { runCatching {
+            val ip=host.text.toString(); require(ip.matches(Regex("[0-9]{1,3}(\\.[0-9]{1,3}){3}")) && ip.split(".").all { it.toInt() in 0..255 }) { "请输入连接诊断中的本机 IPv4 地址" }
+            val p=port.text.toString().toInt(); require(p in 1024..65535) { "端口无效" }
+            val t=token.text.toString(); require(t.matches(Regex("[A-Za-z0-9_-]{16,128}"))) { "令牌格式无效" }
+            copy("python tools/bridge/joydurm_bridge.py --host $ip --port $p --token $t --bind LEFT_HAND=ID1 --bind RIGHT_HAND=ID2 --bind LEFT_FOOT=ID3 --bind RIGHT_FOOT=ID4","桥接命令")
+        }.onFailure { showStatus(it.message ?: "无法生成命令") } })
+        body.addView(text("电脑在项目目录先运行 python tools/bridge/joydurm_bridge.py --list，将命令中的 ID1–ID4 替换为实际设备 ID。手机和电脑连接同一局域网，并允许 UDP。拒绝计数增加时检查令牌和数据格式。",12))
         body.addView(text("高级：直连原始 HID。仅适用于已开放 /dev/hidraw 权限的开发设备；普通手机使用上方桥接。",12))
         val path=field("HID 节点","/dev/hidraw0"); body.addView(path)
         body.addView(button("打开 HID") { runCatching { hub.openHid(path.text.toString()); refreshList() }.onFailure { showStatus(it.message ?: "HID 打开失败") } })
-        dialog("连接与角色绑定",body)
+        val deviceDialog=dialog("连接与角色绑定",body)
+        val refresh=object: Runnable { override fun run() { if(deviceDialog.isShowing) { if(resumed)refreshList(); main.postDelayed(this,1000) } } }
+        deviceDialog.setOnDismissListener { main.removeCallbacks(refresh) }; main.post(refresh)
     }
     private fun calibrationDialog() {
         val body=column()
@@ -176,12 +251,12 @@ class MainActivity: ComponentActivity() {
         Role.entries.forEach { role ->
             body.addView(text(role.label,17,true))
             body.addView(button("静置校准 · 3 秒") { calibrate(role) })
-            body.addView(button("设置当前位置为零点") { engine.recenter(role); store.save(engine); showStatus("${role.label} 已归中") })
+            body.addView(button("设置当前位置为零点") { runCatching { synchronized(engine) { requireFresh(role); engine.recenter(role) }; store.save(engine) }.onSuccess { showStatus("${role.label} 已归中") }.onFailure { showStatus(it.message ?: "归中失败") } })
             body.addView(button("击打阈值 / 方向") { tuningDialog(role) })
             if(role==Role.LEFT_HAND || role==Role.RIGHT_HAND) body.addView(button("绑定一个鼓件方向") {
                 val targets=Drum.entries.filter { it!=Drum.KICK && it!=Drum.CHICK }
                 AlertDialog.Builder(this).setTitle("${role.label} 指向对应位置，然后点击鼓件").setItems(targets.map { it.label }.toTypedArray()) { _,i ->
-                    runCatching { engine.bindTarget(role,targets[i]); store.save(engine); showStatus("已绑定 ${targets[i].label}") }.onFailure { showStatus(it.message ?: "绑定失败") }
+                    runCatching { synchronized(engine) { requireFresh(role); engine.bindTarget(role,targets[i]) }; store.save(engine); showStatus("已绑定 ${targets[i].label}") }.onFailure { showStatus(it.message ?: "绑定失败") }
                 }.show()
             })
         }
@@ -190,9 +265,9 @@ class MainActivity: ComponentActivity() {
     }
     private fun calibrate(role: Role) {
         val s=engine.roles[role]!!
-        if(s.latest==null || SystemClock.elapsedRealtimeNanos()-(s.latest?.timeNs ?: 0)>1_000_000_000) { showStatus("${role.label} 没有实时 IMU 数据"); return }
+        if(s.latest==null || SystemClock.elapsedRealtimeNanos()-(s.latest?.timeNs ?: 0) !in 0..1_000_000_000L) { showStatus("${role.label} 没有实时 IMU 数据"); return }
         activeCalibrationDialog?.dismiss()
-        engine.startCalibration(role)
+        runCatching { engine.startCalibration(role) }.onFailure { showStatus(it.message ?: "无法开始校准") }.getOrElse { return }
         val progress=text("保持手柄静止，正在采样…",18)
         val d=AlertDialog.Builder(this).setTitle(role.label).setView(progress).setNegativeButton("取消") { _,_ -> engine.cancelCalibration(role) }.create()
         val finish=Runnable {
@@ -215,11 +290,13 @@ class MainActivity: ComponentActivity() {
         if(role==Role.LEFT_FOOT) { body.addView(range); body.addView(footFlip) }
         dialog("${role.label} · 参数",body) {
             runCatching {
-                synchronized(engine) { s.stroke.threshold=threshold.text.toString().toDouble().coerceIn(0.2,30.0); s.stroke.cooldownNs=cooldown.text.toString().toLong().coerceIn(30,500)*1_000_000
+                val newThreshold=finite(threshold,0.2,30.0); val newCooldown=cooldown.text.toString().toLong().coerceIn(30,500)*1_000_000
+                val newRange=if(role==Role.LEFT_FOOT)Math.toRadians(finite(range,6.0,85.0)) else engine.hatRange
+                synchronized(engine) { s.stroke.threshold=newThreshold; s.stroke.cooldownNs=newCooldown
                     s.axis=axis.selectedItemPosition; s.sign=if(flip.isChecked)-1.0 else 1.0
-                    if(role==Role.LEFT_FOOT) { engine.hatRange=Math.toRadians(range.text.toString().toDouble().coerceIn(6.0,85.0)); engine.hatSign=if(footFlip.isChecked)-1.0 else 1.0 }
+                    if(role==Role.LEFT_FOOT) { engine.hatRange=newRange; engine.hatSign=if(footFlip.isChecked)-1.0 else 1.0 }
                 }; store.save(engine)
-            }.onFailure { showStatus("参数不是有效数字") }
+            }.getOrThrow()
         }
     }
     private fun layoutDialog() {
@@ -236,11 +313,13 @@ class MainActivity: ComponentActivity() {
             override fun onItemSelected(p: AdapterView<*>?,v: View?,position: Int,id: Long) { val pos=scene.piecePosition(drums[position]); x.setText(pos.x.toString()); y.setText(pos.y.toString()); z.setText(pos.z.toString()) }
         }
         body.addView(button("应用布局") { runCatching {
-            scene.kitScale=scale.text.toString().toFloat().coerceIn(0.3f,2f); scene.kitYaw=yaw.text.toString().toFloat().coerceIn(-360f,360f)
-            scene.setPiecePosition(drums[spinner.selectedItemPosition],x.text.toString().toFloat().coerceIn(-3f,3f),y.text.toString().toFloat().coerceIn(0f,3f),z.text.toString().toFloat().coerceIn(-3f,3f)); store.saveScene(scene)
+            val newScale=finite(scale,0.3,2.0).toFloat(); val newYaw=finite(yaw,-360.0,360.0).toFloat()
+            val newX=finite(x,-3.0,3.0).toFloat(); val newY=finite(y,0.0,3.0).toFloat(); val newZ=finite(z,-3.0,3.0).toFloat()
+            scene.kitScale=newScale; scene.kitYaw=newYaw
+            scene.setPiecePosition(drums[spinner.selectedItemPosition],newX,newY,newZ); store.saveScene(scene)
         }.onFailure { showStatus("布局参数无效") } })
         body.addView(button("重新选择 AR 地面位置") { scene.resetPlacement(); showStatus("点击地面重新摆放") })
-        body.addView(button("导入 GLB 模型") { importModel=true; importer.launch(arrayOf("model/gltf-binary","application/octet-stream")) })
+        body.addView(button("导入 GLB 模型") { launchImport(ImportRequest(true,Drum.SNARE,audio.kit)) })
         body.addView(text("GLB 的八个鼓件需独立命名，详见 README。Sketchfab 模型须保留原作者署名。",12))
         dialog("鼓组空间布局",body).setOnDismissListener { scene.editMode=false }
     }
@@ -256,9 +335,9 @@ class MainActivity: ComponentActivity() {
             override fun onProgressChanged(p: SeekBar?,v: Int,user: Boolean) { audio.volume=v/100f; store.prefs.edit().putFloat("volume",audio.volume).apply() }
         }) })
         val tempo=field("节拍器 BPM 30–240",bpm.toString()); body.addView(tempo)
-        body.addView(button("设置 BPM") { bpm=tempo.text.toString().toIntOrNull()?.coerceIn(30,240) ?: 100 })
+        body.addView(button("设置 BPM") { val value=tempo.text.toString().toIntOrNull(); if(value==null)tempo.error="请输入整数 BPM" else { bpm=value.coerceIn(30,240); store.prefs.edit().putInt("bpm",bpm).apply(); showStatus("节拍器 $bpm BPM") } })
         body.addView(button("导入单鼓 WAV 音色") {
-            AlertDialog.Builder(this).setTitle("选择要替换的音色").setItems(Drum.entries.map { it.label }.toTypedArray()) { _,i -> importDrum=Drum.entries[i]; importModel=false; importer.launch(arrayOf("audio/wav","audio/x-wav","application/octet-stream")) }.show()
+            AlertDialog.Builder(this).setTitle("选择要替换的音色").setItems(Drum.entries.map { it.label }.toTypedArray()) { _,i -> launchImport(ImportRequest(false,Drum.entries[i],audio.kit)) }.show()
         })
         body.addView(text("内置为原创合成音色，离线可用；真实鼓采样可通过 WAV 导入。先用手机扬声器或有线耳机验证延迟。",13))
         dialog("音色与节拍器",body)
@@ -267,9 +346,9 @@ class MainActivity: ComponentActivity() {
     private val update=object: Runnable { override fun run() {
         if(!resumed) return
         val now=SystemClock.elapsedRealtimeNanos()
-        monitor.text=Role.entries.joinToString("\n\n") { r -> val s=engine.roles[r]!!; val live=now-(s.latest?.timeNs ?: 0)<500_000_000
+        monitor.text=Role.entries.joinToString("\n\n") { r -> val s=engine.roles[r]!!; val live=s.latest?.let { now-it.timeNs in 0..500_000_000L } ?: false
             "${if(live)"●" else "○"} ${r.label}\n${if(live)"实时数据" else if(s.device!=null)"等待数据" else "未绑定"}${if(s.calibration!=null)" · 已校准" else ""}" }
-        hatBar.progress=(engine.openness*100).toInt(); scene.openness=engine.openness
+        hatBar.progress=(engine.openness*100).toInt(); scene.openness=engine.openness.takeIf { it.isFinite() } ?: 0f
         main.postDelayed(this,100)
     } }
     override fun onResume() {
@@ -278,8 +357,14 @@ class MainActivity: ComponentActivity() {
         main.post(update); if(metronome) main.post(tick)
         if(arInstallRequested && checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED) enableAr()
     }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("arInstallRequested",arInstallRequested)
+        outState.putBoolean("arRequested",arRequested)
+        pendingImport?.let { outState.putBoolean("pendingModel",it.model); outState.putString("pendingDrum",it.drum.name); outState.putInt("pendingBank",it.bank) }
+        super.onSaveInstanceState(outState)
+    }
     override fun onPause() { activeCalibrationDialog?.dismiss(); resumed=false; hub.stop(); main.removeCallbacks(update); main.removeCallbacks(tick); store.save(engine); if(::scene.isInitialized)store.saveScene(scene); super.onPause() }
-    override fun onDestroy() { main.removeCallbacksAndMessages(null); hub.stop(); audio.close(); scene.destroy(); super.onDestroy() }
+    override fun onDestroy() { importWorker.shutdown(); main.removeCallbacksAndMessages(null); hub.stop(); audio.close(); scene.destroy(); super.onDestroy() }
     override fun onKeyDown(keyCode: Int,event: KeyEvent): Boolean {
         val drum=when(keyCode) { KeyEvent.KEYCODE_A,KeyEvent.KEYCODE_BUTTON_A -> Drum.SNARE; KeyEvent.KEYCODE_S,KeyEvent.KEYCODE_BUTTON_B -> Drum.KICK; KeyEvent.KEYCODE_D,KeyEvent.KEYCODE_BUTTON_X -> Drum.HAT; KeyEvent.KEYCODE_F,KeyEvent.KEYCODE_BUTTON_Y -> Drum.CRASH; else -> null }
         if(drum!=null && event.repeatCount==0) { engine.trigger(drum); return true }; return super.onKeyDown(keyCode,event)
@@ -302,7 +387,16 @@ class MainActivity: ComponentActivity() {
     private fun column()=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(8),dp(16),dp(8)) }
     private fun dialog(title: String,body: View,onSave: (()->Unit)?=null): AlertDialog {
         val scroll=ScrollView(this).apply { addView(body) }
-        return AlertDialog.Builder(this).setTitle(title).setView(scroll).setPositiveButton(if(onSave==null)"完成" else "保存") { _,_ -> onSave?.invoke() }.create().also { it.show(); it.window?.setLayout((resources.displayMetrics.widthPixels*if(resources.configuration.screenWidthDp<600)0.95 else 0.65).toInt(),(resources.displayMetrics.heightPixels*0.85).toInt()) }
+        return AlertDialog.Builder(this).setTitle(title).setView(scroll).setPositiveButton(if(onSave==null)"完成" else "保存",null).create().also { d -> d.show(); d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { if(onSave==null) d.dismiss() else runCatching { onSave.invoke() }.onSuccess { d.dismiss() }.onFailure { Toast.makeText(this,it.message ?: "参数无效",Toast.LENGTH_LONG).show(); showStatus(it.message ?: "参数无效") } }; d.window?.setLayout((resources.displayMetrics.widthPixels*if(resources.configuration.screenWidthDp<600)0.95 else 0.65).toInt(),(resources.displayMetrics.heightPixels*0.85).toInt()) }
+    }
+    private fun requireFresh(role: Role) {
+        val time=engine.roles[role]?.latest?.timeNs ?: error("没有运动数据")
+        require(SystemClock.elapsedRealtimeNanos()-time in 0..500_000_000L) { "没有实时 IMU 数据，请先检查连接诊断" }
+    }
+    private fun finite(field: EditText,min: Double,max: Double): Double {
+        val number=field.text.toString().toDoubleOrNull() ?: run { field.error="请输入数字"; error("请输入有效数字") }
+        if(!number.isFinite()) { field.error="请输入有限数字"; error("请输入有限数字") }
+        return number.coerceIn(min,max)
     }
     private fun newToken(): String { val b=ByteArray(16); SecureRandom().nextBytes(b); return b.joinToString(""){"%02x".format(it)} }
 }

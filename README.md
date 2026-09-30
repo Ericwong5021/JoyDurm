@@ -4,7 +4,7 @@
 
 四个 Joy-Con + Android 手机，演奏一套可摆放在现实空间里的虚拟架子鼓。
 
-**这是 v0.1.0 可构建项目，尚未完成真实手机与四个 Joy-Con 的硬件验收。**
+**这是 v0.1.1 可构建项目，尚未完成真实手机与四个 Joy-Con 的硬件验收。**
 原版 Joy-Con 的 Android IMU 直连取决于手机驱动和权限；不能承诺所有普通
 Android 手机都能直接读取运动数据。项目同时交付电脑 HIDAPI 桥接，可绕开
 手机的原始 HID 限制。Switch 2 Joy-Con 暂不支持。
@@ -32,7 +32,8 @@ Android 手机都能直接读取运动数据。项目同时交付电脑 HIDAPI �
 
 1. 在 [Actions](https://github.com/Ericwong5021/JoyDurm/actions/workflows/android.yml)
    打开一次成功的构建，下载 `JoyDurm-debug-*` artifact，解压安装 APK。
-2. 首次进入无需联网，可以点下方鼓垫或屏幕里的鼓件演奏。
+2. 首次进入会显示「首次使用」引导；之后可从「设备 → 首次使用步骤」再次打开。
+   无需联网，可以点下方鼓垫或屏幕里的鼓件演奏。
 3. 将手机固定在支架上。连接手柄后，在「设备」中分别绑定四肢。
 4. 在「校准」逐个做静置校准；双手朝前、左脚平放，再归中。
 5. 调整挥击方向、轴向和阈值。用「绑定一个鼓件方向」完成手势分区。
@@ -42,6 +43,8 @@ Android 手机都能直接读取运动数据。项目同时交付电脑 HIDAPI �
    时使用普通 3D 模式。
 
 第一次验证用手机扬声器或有线耳机。蓝牙耳机的延迟可能盖过输入算法的表现。
+详细的新手操作、断连与桥接关闭验收见 [真机验收步骤](docs/TESTING.md)。
+现有自动测试与模拟器不能代替真实手机、四只 Joy-Con 和 AR 的实测。
 
 ## Joy-Con 接入路径
 
@@ -68,7 +71,12 @@ pip install -r requirements.txt
 python joydurm_bridge.py --list
 ```
 
-在 App「设备」里开启桥接，复制令牌；将下面 IP、令牌和四个 ID 替换为实际值：
+电脑与手机连接同一个可信 Wi-Fi，关闭会隔离客户端的访客网络。
+在手机系统 Wi-Fi 详情里查看手机的局域网 IPv4 地址（不要填写电脑 IP 或 `127.0.0.1`）。
+App「设备」中保留默认 UDP 端口 `18185`，点击「开启桥接监听」，再「复制令牌」。
+令牌为 16–128 个字母、数字、下划线或连字符；建议保留自动生成值。
+命令行填写当前 App 里的同一值。
+将下面 IP、令牌和 `--list` 输出的四个互不相同 ID 替换为实际值：
 
 ```sh
 python joydurm_bridge.py --host 192.168.1.20 --token TOKEN_FROM_APP \
@@ -77,6 +85,19 @@ python joydurm_bridge.py --host 192.168.1.20 --token TOKEN_FROM_APP \
   --bind LEFT_FOOT=LEFT_FOOT_ID \
   --bind RIGHT_FOOT=RIGHT_FOOT_ID
 ```
+
+也可点「复制电脑桥接命令」，它包含当前 IP、端口和令牌，仍需替换 ID1–ID4。
+复制的命令从**项目根目录**运行；下方手写示例则从 `tools/bridge` 运行。
+若显示多个本机 LAN 地址，在「手机 LAN 地址」输入框选择电脑能访问的
+Wi-Fi IPv4，再复制命令；不要盲用 VPN 地址。
+如果修改端口，桥接命令也加 `--port 实际端口`。
+启动后回到 App「设备 → 连接诊断」，查看 UDP 监听端口、接受/拒绝计数，
+逐个核对四只手柄的设备 ID、最后样本时间和持续增加的样本数。列表每秒刷新。
+接受计数不增时检查 IP、端口和网络；拒绝计数增加时检查令牌或数据格式。配对成功
+并不代表收到加速度/陀螺仪。确认演奏页四个角色均显示「实时数据」，再开始校准。
+
+停止电脑桥接用 `Ctrl+C`；App「设备 → 关闭桥接监听」会关闭 UDP 并保存关闭状态，
+切到后台再回来也不会自动重新打开；需手动点击「开启桥接监听」恢复。
 
 防火墙应允许电脑到手机的 UDP 18185。Linux 如遇 HID 节点权限问题，按
 发行版方式为当前用户安装仅匹配 Nintendo VID 057e 的 udev 规则。macOS
@@ -94,14 +115,15 @@ python joydurm_bridge.py --host 192.168.1.20 --token TOKEN_FROM_APP --simulate
 配置 `ANDROID_HOME` 或本机 `local.properties` 的 `sdk.dir`。
 
 ```sh
-./gradlew testDebugUnitTest lintDebug assembleDebug
-# Windows: gradlew.bat testDebugUnitTest lintDebug assembleDebug
+./gradlew testDebugUnitTest lintDebug lintRelease assembleDebug assembleRelease
+# Windows: gradlew.bat testDebugUnitTest lintDebug lintRelease assembleDebug assembleRelease
 ```
 
 APK：`app/build/outputs/apk/debug/app-debug.apk`。
 桥接测试：`python3 -m unittest discover -s tools/bridge -v`。
 
-CI 在 main push、PR、手动运行时执行检查并上传可安装 debug APK。
+CI 在 main push、PR、手动运行时执行单测、debug/release Lint 和两种 APK 构建，
+上传可安装 debug APK；未配置签名时本地 release 输出为 unsigned APK，不可直接安装。
 推送 `v*` 标签会创建 GitHub 预发布；无签名配置时交付 debug APK。
 Debug 签名可能在不同构建环境间变化，更新安装遇签名不匹配时需先卸载。
 
@@ -123,6 +145,10 @@ Debug 签名可能在不同构建环境间变化，更新安装遇签名不匹�
 
 ARCore SDK / Google Play Services for AR 是 Google 的专有运行依赖；本项目不把它
 称为开源。没有 Unity 许可证、云服务或收费 AR 平台依赖。
+
+WAV 导入仅支持不超过 1 MB、最长 3 秒的 8–96 kHz 单/双声道 PCM16。
+界面先显示加载中，SoundPool 实际解码成功才显示「音色已加载」并保存替换；
+失败保留原音色。闭合踩镲敲击和闭镲 chick 都会截断正在播放的开镲尾音。
 
 ## 模型与 Sketchfab
 

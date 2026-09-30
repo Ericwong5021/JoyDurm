@@ -29,15 +29,24 @@ class DrumEngine(private val onHit: (Hit) -> Unit) {
             if(role==Role.LEFT_FOOT) openness=0f
         }
     }
-    @Synchronized fun startCalibration(role: Role) { calibrators[role]=StationaryCalibrator() }
-    @Synchronized fun cancelCalibration(role: Role) { calibrators.remove(role) }
+    @Synchronized fun startCalibration(role: Role) {
+        require(roles[role]!!.device!=null) { "请先分配手柄" }
+        roles[role]!!.stroke.reset(); calibrators[role]=StationaryCalibrator()
+        if(role==Role.LEFT_FOOT) openness=0f
+    }
+    @Synchronized fun cancelCalibration(role: Role) { calibrators.remove(role); roles[role]!!.stroke.reset() }
     @Synchronized fun calibrationCount(role: Role) = calibrators[role]?.count ?: 0
     @Synchronized fun finishCalibration(role: Role): Calibration {
-        val result = calibrators.remove(role)?.finish() ?: error("尚未开始校准")
+        val result = calibrators[role]?.finish() ?: error("尚未开始校准")
+        calibrators.remove(role)
         roles[role]!!.apply { calibration=result; filter.reset(); stroke.reset(); neutral=Attitude(0.0,0.0,0.0) }
         return result
     }
-    @Synchronized fun recenter(role: Role) { roles[role]!!.apply { neutral=filter.attitude; stroke.reset() } }
+    @Synchronized fun recenter(role: Role) {
+        require(roles[role]!!.latest!=null) { "没有运动数据" }
+        roles[role]!!.apply { neutral=filter.attitude; stroke.reset() }
+        if(role==Role.LEFT_FOOT) openness=0f
+    }
     @Synchronized fun bindTarget(role: Role, drum: Drum) {
         require(role==Role.LEFT_HAND || role==Role.RIGHT_HAND)
         val state=roles[role]!!

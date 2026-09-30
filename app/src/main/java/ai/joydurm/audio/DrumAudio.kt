@@ -8,7 +8,6 @@ import ai.joydurm.core.*
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlin.math.*
 import kotlin.random.Random
@@ -16,37 +15,74 @@ import kotlin.random.Random
 /** Offline one-shot synthesis + Android's native polyphonic SoundPool. No audio generation on the hit path. */
 class DrumAudio(private val context: Context,private val status: (String)->Unit) {
     private val pool=SoundPool.Builder().setMaxStreams(24).setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()).build()
-    private val ids=ConcurrentHashMap<String,Int>()
-    private val ready=ConcurrentHashMap.newKeySet<Int>()
+    private val lock=Any()
+    private val slots=SampleSlots()
+    private val callbacks=mutableMapOf<Int,(Boolean)->Unit>()
     private val worker=Executors.newSingleThreadExecutor()
-    private val openStreams=ConcurrentHashMap<Int,Long>()
+    private val main=android.os.Handler(android.os.Looper.getMainLooper())
+    private val openStreams=mutableMapOf<Int,Long>()
     @Volatile var kit=0
     @Volatile var volume=0.8f
     @Volatile private var closed=false
+    private var announcedReady=false
     val kitNames=listOf("Studio · 合成鼓","Electronic · 电子","Lo-fi · 柔和")
     init {
-        pool.setOnLoadCompleteListener { _,id,result -> if(result==0) { ready.add(id); if(ready.size==ids.size) status("音色已就绪") } else status("音色加载失败 ($result)") }
+        pool.setOnLoadCompleteListener { _,id,result ->
+            var callback: ((Boolean)->Unit)?=null
+            var success=false
+            var notice: String?=null
+            synchronized(lock) {
+                if(!closed) {
+                    val completion=slots.complete(id,result==0)
+                    callback=callbacks.remove(id)
+                    success=completion?.activated==true
+                    completion?.unload?.let { pool.unload(it) }
+                    if(result!=0) notice="音色加载失败 ($result)，保留原有音色"
+                    if(!announcedReady && slots.loadedCount==3*(Drum.entries.size+3)) { announcedReady=true; notice="音色已就绪" }
+                }
+            }
+            notice?.let(status)
+            callback?.let { done -> main.post { done(success) } }
+        }
         worker.execute {
             try {
                 for(bank in 0..2) for(name in Drum.entries.map { it.name }+listOf("HAT_HALF","HAT_OPEN","CLICK")) {
-                    if(closed) break
+                    if(closed) return@execute
                     val f=File(context.cacheDir,"drum-$bank-$name.wav")
                     if(!f.exists()) f.writeBytes(synthesize(name,bank))
-                    val id=pool.load(f.path,1); ids["$bank:$name"]=id
+                    load(f,"$bank:$name",null)
                 }
             } catch(e: Exception) { if(!closed) status("音频初始化失败：${e.message}") }
         }
     }
-    @Synchronized fun play(hit: Hit) {
-        if(closed) return
-        if(hit.drum==Drum.CHICK) { openStreams.keys.forEach { pool.stop(it) }; openStreams.clear() }
+    private fun load(file: File,key: String,onComplete: ((Boolean)->Unit)?) {
+        var rejected=false
+        synchronized(lock) {
+            if(closed) rejected=true
+            else {
+                val id=pool.load(file.path,1)
+                if(id==0) rejected=true
+                else { slots.register(key,id); if(onComplete!=null) callbacks[id]=onComplete }
+            }
+        }
+        if(rejected) {
+            if(!closed) status("音色未能加载，保留原有音色")
+            onComplete?.let { main.post { it(false) } }
+        }
+    }
+    fun play(hit: Hit) = synchronized(lock) {
+        if(closed) return@synchronized
+        // A closed strike also chokes a ringing open hat, even if no foot chick was detected.
+        if(hit.drum==Drum.CHICK || (hit.drum==Drum.HAT && hit.openness<=0.15f)) {
+            openStreams.keys.forEach { pool.stop(it) }; openStreams.clear()
+        }
         val name=if(hit.drum==Drum.HAT) when { hit.openness>0.65f -> "HAT_OPEN"; hit.openness>0.15f -> "HAT_HALF"; else -> "HAT" } else hit.drum.name
         playName(name,hit.velocity)
     }
-    fun click() { playName("CLICK",0.5f) }
+    fun click() = synchronized(lock) { if(!closed) playName("CLICK",0.5f) }
     private fun playName(name: String,velocity: Float) {
-        val id=ids["$kit:$name"] ?: return
-        if(id !in ready) return
+        if(!velocity.isFinite() || !volume.isFinite()) return
+        val id=slots.id("$kit:$name") ?: return
         val gain=(velocity*volume).coerceIn(0f,1f)
         val stream=pool.play(id,gain,gain,1,0,1f)
         if(name=="HAT_OPEN" || name=="HAT_HALF") {
@@ -55,12 +91,35 @@ class DrumAudio(private val context: Context,private val status: (String)->Unit)
             if(stream!=0)openStreams[stream]=now
         }
     }
-    fun importWav(file: File,drum: Drum,bank: Int=kit) {
+    /** Completion is delivered on the main thread after the sample actually decodes. */
+    fun importWav(file: File,drum: Drum,bank: Int=kit,onComplete: ((Boolean)->Unit)?=null) {
+        require(bank in 0..2) { "音色库无效" }
         require(file.length() in 44..1_000_000) { "WAV 必须小于 1 MB" }
         WaveValidator.validate(file.readBytes())
-        worker.execute { if(!closed) ids["$bank:${drum.name}"]=pool.load(file.path,1) }
+        try {
+            worker.execute {
+                try { load(file,"$bank:${drum.name}",onComplete) }
+                catch(e: Exception) {
+                    if(!closed) status("音色加载失败：${e.message}")
+                    onComplete?.let { main.post { it(false) } }
+                }
+            }
+        } catch(_: java.util.concurrent.RejectedExecutionException) { onComplete?.let { main.post { it(false) } } }
     }
-    fun close() { closed=true; worker.shutdownNow(); pool.release() }
+    fun close() {
+        val canceled=synchronized(lock) {
+            if(closed) return
+            closed=true
+            val pending=callbacks.values.toList()
+            callbacks.clear(); slots.clear(); openStreams.clear()
+            pending
+        }
+        // Drain queued loaders: they see closed and report failure without touching the pool.
+        worker.shutdown()
+        pool.setOnLoadCompleteListener(null)
+        pool.release()
+        canceled.forEach { done -> main.post { done(false) } }
+    }
     companion object {
         fun synthesize(name: String,bank: Int): ByteArray {
             val rate=48000

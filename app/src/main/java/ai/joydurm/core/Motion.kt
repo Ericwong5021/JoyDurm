@@ -46,7 +46,15 @@ class OrientationFilter {
 class StationaryCalibrator {
     private val samples = ArrayList<ImuSample>()
     val count get() = samples.size
-    fun add(s: ImuSample) { if(s.accel.finite() && s.gyro.finite() && (samples.lastOrNull()?.let { it.device == s.device && s.timeNs > it.timeNs } != false)) samples.add(s) }
+    fun add(s: ImuSample) {
+        if(!s.accel.finite() || !s.gyro.finite()) return
+        val previous=samples.lastOrNull()
+        if(previous!=null && (previous.device!=s.device || s.timeNs<=previous.timeNs)) return
+        // A missing transport interval is not a continuous stationary calibration.
+        if(previous!=null && s.timeNs-previous.timeNs>300_000_000L) samples.clear()
+        if(samples.size==1200) samples.removeAt(0)
+        samples.add(s)
+    }
     fun finish(): Calibration {
         require(samples.size >= 100) { "样本不足：保持静止至少 2 秒" }
         require(samples.last().timeNs-samples.first().timeNs >= 1_500_000_000L) { "采样时间不足" }

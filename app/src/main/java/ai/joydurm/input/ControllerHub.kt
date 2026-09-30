@@ -21,129 +21,190 @@ import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.SocketTimeoutException
+import java.net.NetworkInterface
+import java.net.Inet4Address
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
 data class ControllerInfo(val id: String, val name: String, val transport: String, val motion: Boolean)
+data class DeviceDiagnostics(val id: String, val name: String, val transport: String, val motion: Boolean,
+    val lastSampleTimeNs: Long?, val sampleCount: Long, val lastError: String?)
+data class ConnectionDiagnostics(val running: Boolean, val bridgeRunning: Boolean, val bridgePort: Int?,
+    val acceptedPackets: Long, val rejectedPackets: Long, val devices: List<DeviceDiagnostics>, val lanAddresses: List<String>)
 
 /** Never substitute the PHONE's sensors for a controller that has no exposed IMU. */
 class ControllerHub(private val context: Context, private val sample: (ImuSample)->Unit, private val status: (String)->Unit) : InputManager.InputDeviceListener {
     private val input = context.getSystemService(InputManager::class.java)
-    private val listeners = mutableMapOf<Int, Pair<SensorManager,SensorEventListener>>()
+    private val handler=Handler(Looper.getMainLooper())
+    private data class SensorBinding(val id: String, val manager: SensorManager, val listener: SensorEventListener)
+    private val listeners = mutableMapOf<Int,SensorBinding>()
+    private val androidIds=mutableMapOf<Int,String>()
     val devices = ConcurrentHashMap<String,ControllerInfo>()
-    private val raw = mutableListOf<RawHidSource>()
+    private val health=mutableMapOf<String,InputHealth>()
+    private val raw = mutableMapOf<String,RawHidSource>()
     private var udp: DatagramSocket? = null
-    @Volatile private var running = false
+    private var acceptedPackets=0L
+    private var rejectedPackets=0L
+    private var running = false
     var onDeviceLost: ((String)->Unit)? = null
     var onRemoteRole: ((Role,String)->Unit)? = null
-    fun start() {
+    private val watchdog=object: Runnable {
+        override fun run() { synchronized(this@ControllerHub) {
+            if(!running) return
+            expire(SystemClock.elapsedRealtimeNanos())
+            handler.postDelayed(this,1000)
+        } }
+    }
+    @Synchronized fun start() {
         if(running) return
         running=true
-        input.registerInputDeviceListener(this,Handler(Looper.getMainLooper()))
-        refresh()
+        input.registerInputDeviceListener(this,handler)
+        refresh(); handler.postDelayed(watchdog,1000)
     }
-    fun stop() {
-        running=false; input.unregisterInputDeviceListener(this)
-        listeners.values.forEach { it.first.unregisterListener(it.second) }; listeners.clear()
-        raw.forEach { it.close() }; raw.clear(); udp?.close(); udp=null
-        devices.keys.toList().forEach { onDeviceLost?.invoke(it) }; devices.clear()
+    @Synchronized fun stop() {
+        running=false; handler.removeCallbacks(watchdog); input.unregisterInputDeviceListener(this)
+        listeners.values.forEach { it.manager.unregisterListener(it.listener) }; listeners.clear(); androidIds.clear()
+        closeBridge()
+        val sources=raw.values.toList(); raw.clear(); sources.forEach { it.close() }
+        devices.keys.toList().forEach { lose(it,"监听已停止",remove=true) }
     }
     @SuppressLint("MissingPermission") fun bondedNames(): List<String> = try {
         context.getSystemService(BluetoothManager::class.java)?.adapter?.bondedDevices?.map { "${it.name ?: "Bluetooth"} · ${it.address}" } ?: emptyList()
     } catch (_: SecurityException) { listOf("请授予附近设备权限") }
-    fun refresh() {
-        InputDevice.getDeviceIds().asIterable().mapNotNull { InputDevice.getDevice(it) }.filter { it.vendorId==0x057e || it.name.contains("Joy-Con",true) }.forEach { attach(it) }
+    @Synchronized fun diagnostics(): ConnectionDiagnostics {
+        val now=SystemClock.elapsedRealtimeNanos(); expire(now)
+        val addresses=runCatching { NetworkInterface.getNetworkInterfaces().toList().flatMap { it.inetAddresses.toList() }
+            .filterIsInstance<Inet4Address>().filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }.mapNotNull { it.hostAddress }.distinct() }.getOrDefault(emptyList())
+        return ConnectionDiagnostics(running,udp?.isClosed==false,udp?.takeUnless { it.isClosed }?.localPort,
+            acceptedPackets,rejectedPackets,devices.values.sortedBy { it.id }.map { d ->
+                val h=health[d.id]; DeviceDiagnostics(d.id,d.name,d.transport,h?.fresh(now)==true,h?.lastSampleTimeNs,h?.sampleCount ?: 0,h?.lastError)
+            },addresses)
+    }
+    private fun lose(id: String, reason: String, remove: Boolean=false) {
+        val wasKnown=devices.containsKey(id)
+        health.getOrPut(id) { InputHealth() }.disconnect(reason)
+        if(remove) devices.remove(id) else devices[id]?.let { devices[id]=it.copy(motion=false) }
+        if(wasKnown) onDeviceLost?.invoke(id)
+    }
+    private fun expire(now: Long) {
+        health.forEach { (id,h) -> if(h.expire(now)) {
+            devices[id]?.let { devices[id]=it.copy(motion=false) }; onDeviceLost?.invoke(id)
+        } }
+    }
+    private fun deliver(s: ImuSample): Boolean {
+        val now=SystemClock.elapsedRealtimeNanos()
+        val h=health.getOrPut(s.device) { InputHealth() }
+        if(!h.accept(s,now)) return false
+        devices[s.device]?.let { devices[s.device]=it.copy(motion=true) }
+        sample(s); return true
+    }
+    @Synchronized fun refresh() {
+        if(!running) return
+        InputDevice.getDeviceIds().asIterable().mapNotNull { InputDevice.getDevice(it) }
+            .filter { it.vendorId==0x057e || it.name.contains("Joy-Con",true) }.forEach { attach(it) }
     }
     private fun attach(device: InputDevice) {
-        if(listeners.containsKey(device.id)) return
-        val id="android:${device.descriptor}"
-        if(Build.VERSION.SDK_INT<31) { devices[id]=ControllerInfo(id,device.name,"系统手柄（Android <12）",false); return }
-        val sm=device.sensorManager
-        val acc=sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        val gyro=sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
-        val hasImu=acc!=null && gyro!=null
-        devices[id]=ControllerInfo(id,device.name,"Android 手柄传感器",hasImu)
-        if(!hasImu) { status("${device.name} 已配对，但系统未开放 IMU；请使用 HID 或桥接模式"); return }
-        var acceleration=Vec3()
-        var accelerationTime=0L
-        val listener=object: SensorEventListener {
-            override fun onAccuracyChanged(sensor: Sensor?,accuracy: Int) {}
-            override fun onSensorChanged(e: SensorEvent) {
-                val v=Vec3(e.values[0].toDouble(),e.values[1].toDouble(),e.values[2].toDouble())
-                if(e.sensor.type==Sensor.TYPE_ACCELEROMETER) { acceleration=v; accelerationTime=e.timestamp }
-                else if(accelerationTime > 0 && e.timestamp >= accelerationTime && e.timestamp-accelerationTime <= 50_000_000L) sample(ImuSample(id,e.timestamp,acceleration,v))
+        if(!running || androidIds.containsKey(device.id)) return
+        val id="android:${device.descriptor}"; androidIds[device.id]=id
+        health[id]=InputHealth(SystemClock.elapsedRealtimeNanos())
+        devices[id]=ControllerInfo(id,device.name,"Android 手柄传感器",false)
+        if(Build.VERSION.SDK_INT<31) { lose(id,"Android <12 无控制器传感器 API"); return }
+        try {
+            val sm=device.sensorManager
+            val acc=sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            val gyro=sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+            if(acc==null || gyro==null) { lose(id,"系统未开放控制器 IMU"); return }
+            var acceleration=Vec3(); var accelerationTime=0L
+            val listener=object: SensorEventListener {
+                override fun onAccuracyChanged(sensor: Sensor?,accuracy: Int) {}
+                override fun onSensorChanged(e: SensorEvent) { synchronized(this@ControllerHub) {
+                    if(!running || listeners[device.id]?.listener !== this || e.values.size<3) return
+                    val v=Vec3(e.values[0].toDouble(),e.values[1].toDouble(),e.values[2].toDouble())
+                    if(e.sensor.type==Sensor.TYPE_ACCELEROMETER) { acceleration=v; accelerationTime=e.timestamp }
+                    else if(e.sensor.type==Sensor.TYPE_GYROSCOPE && accelerationTime>0 && e.timestamp>=accelerationTime && e.timestamp-accelerationTime<=50_000_000L)
+                        deliver(ImuSample(id,e.timestamp,acceleration,v))
+                } }
             }
+            // Track before registration so every partial registration can be cleaned up.
+            listeners[device.id]=SensorBinding(id,sm,listener)
+            val a=sm.registerListener(listener,acc,5_000,handler)
+            val g=sm.registerListener(listener,gyro,5_000,handler)
+            if(!a || !g) { sm.unregisterListener(listener); listeners.remove(device.id); lose(id,"传感器注册失败") }
+        } catch(e: Exception) {
+            listeners.remove(device.id)?.let { it.manager.unregisterListener(it.listener) }
+            lose(id,"传感器初始化失败：${e.javaClass.simpleName}")
         }
-        val a=sm.registerListener(listener,acc,5_000)
-        val g=sm.registerListener(listener,gyro,5_000)
-        if(a && g) listeners[device.id]=Pair(sm,listener)
-        else { sm.unregisterListener(listener); devices[id]=ControllerInfo(id,device.name,"传感器注册失败",false) }
     }
-    fun openHid(path: String) {
+    @Synchronized fun openHid(path: String) {
+        require(running) { "请先启动设备监听" }
         require(Regex("/dev/hidraw[0-9]{1,3}").matches(path)) { "仅允许 /dev/hidrawN" }
-        raw.removeAll { !it.isActive }
-        require(raw.none { it.path==path }) { "此 HID 节点已打开" }
-        val source=RawHidSource(path,sample,status) { id -> devices.remove(id); onDeviceLost?.invoke(id) }
-        devices[path]=ControllerInfo(path,path,"原始 HID（需要设备节点权限）",true)
-        try { source.start(); raw.add(source) } catch(e: Exception) { devices.remove(path); throw e }
+        require(raw[path]?.isActive!=true) { "此 HID 节点已打开" }
+        lateinit var source: RawHidSource
+        source=RawHidSource(path,{ s -> synchronized(this) { if(running && raw[path]===source) deliver(s) } },status) {
+            synchronized(this) { if(raw[path]===source) { raw.remove(path); lose(path,"HID 连接已关闭") } }
+        }
+        raw[path]=source; health[path]=InputHealth(SystemClock.elapsedRealtimeNanos())
+        devices[path]=ControllerInfo(path,path,"原始 HID（需要设备节点权限）",false)
+        try { source.start() } catch(e: Exception) { raw.remove(path); lose(path,"无法打开设备节点"); throw e }
     }
-    fun listenBridge(port: Int, token: String) {
+    @Synchronized fun stopBridge() = closeBridge()
+    @Synchronized fun closeBridge() {
+        val previous=udp; udp=null; previous?.close()
+        devices.keys.filter { it.startsWith("bridge:") }.forEach { lose(it,"桥接监听已关闭",remove=true) }
+    }
+    @Synchronized fun listenBridge(port: Int, token: String) {
+        require(running) { "请先启动设备监听" }
         require(port in 1024..65535 && token.length>=16) { "端口应为 1024–65535；令牌至少 16 字符" }
-        udp?.close()
-        devices.keys.filter { it.startsWith("bridge:") }.forEach { devices.remove(it); onDeviceLost?.invoke(it) }
-        val socket=DatagramSocket(port).apply { soTimeout=1000 }; udp=socket
+        closeBridge()
+        val socket=DatagramSocket(port).apply { soTimeout=500 }; udp=socket
+        acceptedPackets=0; rejectedPackets=0
         thread(name="JoyDurm-UDP",isDaemon=true) {
-            val seqs=mutableMapOf<String,Long>()
-            val lastTimes=mutableMapOf<String,Long>()
-            val buffer=ByteArray(8192)
-            while(running && !socket.isClosed) try {
+            val seqs=mutableMapOf<String,Long>(); val lastTimes=mutableMapOf<String,Long>()
+            // One extra byte detects truncated oversized datagrams.
+            val buffer=ByteArray(8193)
+            while(!socket.isClosed) try {
                 val packet=DatagramPacket(buffer,buffer.size); socket.receive(packet)
-                val expiryNow=SystemClock.elapsedRealtimeNanos()
-                lastTimes.filterValues { expiryNow-it>3_000_000_000L }.keys.toList().forEach {
-                    devices.remove(it); lastTimes.remove(it); seqs.remove(it); onDeviceLost?.invoke(it)
+                synchronized(this) {
+                    if(!running || udp!==socket) return@thread
+                    val now=SystemClock.elapsedRealtimeNanos(); expire(now)
+                    try {
+                        require(packet.length<=8192)
+                        val json=JSONObject(String(packet.data,packet.offset,packet.length,Charsets.UTF_8))
+                        require(json.getInt("v")==1 && MessageDigest.isEqual(json.getString("token").toByteArray(),token.toByteArray()))
+                        val identity=json.getString("device"); require(identity.isNotBlank() && identity.length<=120)
+                        val device="bridge:$identity"; val seq=json.getLong("seq"); require(seq>=0)
+                        val previousTime=lastTimes[device]
+                        if(previousTime!=null && now-previousTime>2_000_000_000L) seqs.remove(device)
+                        require(seq>(seqs[device] ?: -1))
+                        val data=json.getJSONArray("samples"); require(data.length() in 1..3)
+                        val decoded=(0 until data.length()).map { i ->
+                            val obj=data.getJSONObject(i); val a=obj.getJSONArray("a"); val g=obj.getJSONArray("g")
+                            require(a.length()==3 && g.length()==3)
+                            ImuSample(device,now-(data.length()-1-i)*5_000_000L,Vec3(a.getDouble(0),a.getDouble(1),a.getDouble(2)),Vec3(g.getDouble(0),g.getDouble(1),g.getDouble(2)))
+                        }
+                        require(decoded.all { it.accel.finite() && it.gyro.finite() && it.accel.norm()<=200 && it.gyro.norm()<=100 })
+                        seqs[device]=seq; lastTimes[device]=now
+                        devices[device]=ControllerInfo(device,json.optString("name","Joy-Con").take(120),"LAN · ${packet.address.hostAddress}",false)
+                        val role=Role.entries.firstOrNull { it.name==json.optString("role") }
+                        if(role!=null) onRemoteRole?.invoke(role,device)
+                        decoded.forEach { deliver(it) }; acceptedPackets++
+                    } catch(_: Exception) { rejectedPackets++ }
                 }
-                val json=JSONObject(String(packet.data,packet.offset,packet.length,Charsets.UTF_8))
-                if(json.optInt("v")!=1 || !MessageDigest.isEqual(json.optString("token").toByteArray(),token.toByteArray())) continue
-                val identity=json.getString("device")
-                if(identity.isBlank() || identity.length>120) continue
-                val device="bridge:$identity"
-                val seq=json.getLong("seq")
-                val now=SystemClock.elapsedRealtimeNanos()
-                // A restarted bridge may reset its sequence, but only after an idle timeout.
-                if(now-(lastTimes[device] ?: 0)>2_000_000_000L) seqs.remove(device)
-                if(seq < 0 || seq <= (seqs[device] ?: -1)) continue
-                val data=json.getJSONArray("samples")
-                if(data.length() !in 1..3) continue
-                val decoded=(0 until data.length()).map { i ->
-                    val s=data.getJSONObject(i); val a=s.getJSONArray("a"); val g=s.getJSONArray("g")
-                    require(a.length()==3 && g.length()==3)
-                    ImuSample(device,now-(data.length()-1-i)*5_000_000L,Vec3(a.getDouble(0),a.getDouble(1),a.getDouble(2)),Vec3(g.getDouble(0),g.getDouble(1),g.getDouble(2)))
-                }
-                if(decoded.any { !it.accel.finite() || !it.gyro.finite() || it.accel.norm()>200 || it.gyro.norm()>100 }) continue
-                seqs[device]=seq; lastTimes[device]=now
-                devices[device]=ControllerInfo(device,json.optString("name","Joy-Con"),"LAN · ${packet.address.hostAddress}",true)
-                val role=Role.entries.firstOrNull { it.name==json.optString("role") }
-                if(role!=null) onRemoteRole?.invoke(role,device)
-                decoded.forEach(sample)
-            } catch (_: SocketTimeoutException) {
-                val now=SystemClock.elapsedRealtimeNanos()
-                lastTimes.filterValues { now-it>3_000_000_000L }.keys.toList().forEach {
-                    devices.remove(it); lastTimes.remove(it); seqs.remove(it); onDeviceLost?.invoke(it)
-                }
-            } catch (e: Exception) {
-                if(!socket.isClosed && running) status("桥接数据异常：${e.message}")
+            } catch(_: SocketTimeoutException) {
+                synchronized(this) { if(running && udp===socket) expire(SystemClock.elapsedRealtimeNanos()) }
+            } catch(_: Exception) {
+                synchronized(this) { if(udp===socket) { closeBridge(); status("桥接监听已中断") } }
+                break
             }
         }
         status("桥接监听已开启 · UDP $port")
     }
-    override fun onInputDeviceAdded(deviceId: Int) { InputDevice.getDevice(deviceId)?.let { if(it.vendorId==0x057e || it.name.contains("Joy-Con",true)) attach(it) } }
-    override fun onInputDeviceChanged(deviceId: Int) { onInputDeviceRemoved(deviceId); onInputDeviceAdded(deviceId) }
-    override fun onInputDeviceRemoved(deviceId: Int) {
-        listeners.remove(deviceId)?.let { it.first.unregisterListener(it.second) }
-        // Remove disconnected system entries without affecting raw HID/LAN connections.
-        val live=InputDevice.getDeviceIds().asIterable().mapNotNull { InputDevice.getDevice(it)?.descriptor }.toSet()
-        devices.keys.filter { it.startsWith("android:") && it.removePrefix("android:") !in live }.forEach { devices.remove(it); onDeviceLost?.invoke(it) }
+    @Synchronized override fun onInputDeviceAdded(deviceId: Int) { if(running) InputDevice.getDevice(deviceId)?.let { if(it.vendorId==0x057e || it.name.contains("Joy-Con",true)) attach(it) } }
+    @Synchronized override fun onInputDeviceChanged(deviceId: Int) { onInputDeviceRemoved(deviceId); onInputDeviceAdded(deviceId) }
+    @Synchronized override fun onInputDeviceRemoved(deviceId: Int) {
+        listeners.remove(deviceId)?.let { it.manager.unregisterListener(it.listener) }
+        androidIds.remove(deviceId)?.let { lose(it,"系统手柄已断开",remove=true) }
     }
 }
 

@@ -85,4 +85,44 @@ class DrumEngineTest {
         c.add(s); c.add(s); c.add(s.copy(device="B",timeNs=20))
         assertEquals(1,c.count)
     }
+    @Test fun healthRequiresRealFreshSamplesAndSignalsLossOnce() {
+        val h=InputHealth(); assertFalse(h.fresh(1_000))
+        val sample=ImuSample("A",1_000,Vec3(0.0,0.0,9.8),Vec3())
+        assertTrue(h.accept(sample,1_000)); assertFalse(h.accept(sample,1_001)); assertEquals(1L,h.sampleCount)
+        assertFalse(h.accept(sample.copy(timeNs=2_000),1_500))
+        assertTrue(h.expire(3_000_002_000)); assertFalse(h.expire(3_000_003_000))
+        assertFalse(h.fresh(3_000_003_000))
+        assertTrue(h.accept(sample.copy(timeNs=4_000_000_000),4_000_000_000))
+        assertTrue(h.fresh(4_000_000_000)); assertNull(h.lastError)
+    }
+    @Test fun calibrationGapRestartsStationaryWindow() {
+        val c=StationaryCalibrator()
+        repeat(400) { c.add(ImuSample("A",it*5_000_000L,Vec3(0.0,0.0,9.8),Vec3())) }
+        c.add(ImuSample("A",3_000_000_000,Vec3(0.0,0.0,9.8),Vec3()))
+        assertEquals(1,c.count)
+    }
+    @Test fun failedCalibrationCanContinueCollecting() {
+        val e=DrumEngine {}; e.assign(Role.LEFT_HAND,"A"); e.startCalibration(Role.LEFT_HAND)
+        e.process(ImuSample("A",1,Vec3(0.0,0.0,9.8),Vec3()))
+        try { e.finishCalibration(Role.LEFT_HAND); fail("expected insufficient samples") } catch(_: IllegalArgumentException) {}
+        assertEquals(1,e.calibrationCount(Role.LEFT_HAND))
+    }
+    @Test fun openedTransportWithoutMotionExpiresAsUnavailable() {
+        val h=InputHealth(1_000)
+        assertFalse(h.fresh(2_000)); assertFalse(h.expire(2_000))
+        assertTrue(h.expire(3_000_002_000)); assertNotNull(h.lastError)
+        assertEquals(0L,h.sampleCount); assertNull(h.lastSampleTimeNs)
+        assertFalse(h.expire(4_000_000_000))
+    }
+    @Test fun delayedBatchCannotMakeOldMotionFresh() {
+        val h=InputHealth()
+        val sample=ImuSample("A",1_000,Vec3(0.0,0.0,9.8),Vec3())
+        assertFalse(h.accept(sample,3_000_002_000))
+        assertEquals(0L,h.sampleCount); assertNull(h.lastSampleTimeNs)
+        assertFalse(h.fresh(3_000_002_000))
+        assertTrue(h.accept(sample,3_000_001_000))
+        assertTrue(h.fresh(3_000_001_000))
+        assertFalse(h.fresh(3_000_001_001))
+        assertTrue(h.expire(3_000_001_001))
+    }
 }
