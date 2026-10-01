@@ -4,8 +4,10 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import shutil
 
 from verify_instrumentation import EXPECTED, verify
+from streamed_evidence import extract_streamed_evidence
 
 
 def run_smoke(output, run_id, timeout_seconds=240):
@@ -57,10 +59,27 @@ def run_smoke(output, run_id, timeout_seconds=240):
                 status['threadDumpRequested'] = dump.returncode == 0
         except subprocess.TimeoutExpired:
             status['threadDumpRequested'] = False
-    # Each diagnostic command is bounded too; one missing file cannot hide Logcat.
-    captures = [('logcat.txt', ['adb', 'logcat', '-d'])] + [
-        (name, ['adb', 'exec-out', 'run-as', 'ai.joydurm', 'cat', 'files/test-reports/' + name])
-        for name in names]
+    recovered = set()
+    try:
+        recovered = extract_streamed_evidence(output / 'instrumentation.txt', output, run_id)
+    except (ValueError, KeyError, TypeError) as error:
+        status['streamEvidenceError'] = str(error)
+    # Complete evidence uses the existing runner channel and retained live Logcat.
+    # No post-run adb connection is required to recover a file already hashed there.
+    captures = []
+    if recovered and (output / 'logcat-live.txt').stat().st_size:
+        shutil.copyfile(output / 'logcat-live.txt', output / 'logcat.txt')
+        status['captures']['logcat.txt'] = dict(exitCode=0, bytes=(output / 'logcat.txt').stat().st_size,
+                                               source='live-logcat')
+    else:
+        captures.append(('logcat.txt', ['adb', 'logcat', '-d']))
+    for name in names:
+        if name in recovered:
+            status['captures'][name] = dict(exitCode=0, bytes=(output / name).stat().st_size,
+                                           source='instrumentation-stream-sha256')
+        else:
+            captures.append((name, ['adb', 'exec-out', 'run-as', 'ai.joydurm', 'cat', 'files/test-reports/' + name]))
+    # Each fallback diagnostic command is bounded too; one missing file cannot hide Logcat.
     for name, command in captures:
         try:
             with (output / name).open('wb') as stream:
@@ -84,6 +103,10 @@ def run_smoke(output, run_id, timeout_seconds=240):
         # remains optional; retain VM/OOM evidence independently of adb availability.
         diagnostics.append(('host-kernel.txt', ['sudo', '-n', 'dmesg', '--time-format=iso']))
     for name, command in diagnostics:
+        if name in recovered:
+            status['diagnosticCaptures'][name] = dict(exitCode=0, bytes=(output / name).stat().st_size,
+                                                     source='instrumentation-stream-sha256')
+            continue
         try:
             with (output / name).open('wb') as stream:
                 result = subprocess.run(command, stdout=stream, stderr=subprocess.PIPE, timeout=15)
@@ -101,6 +124,8 @@ def run_smoke(output, run_id, timeout_seconds=240):
     (output / 'runner-status.json').write_text(json.dumps(status, indent=2) + '\n')
     if status['timedOut'] or status['runnerExitCode'] != 0:
         raise ValueError('Android runner timed out or failed; diagnostics were retained')
+    if status.get('streamEvidenceError'):
+        raise ValueError('Invalid streamed Android evidence: ' + status['streamEvidenceError'])
     if f'OK ({len(EXPECTED)} tests)' not in (output / 'instrumentation.txt').read_text():
         raise ValueError('Android runner did not finish all required tests')
     if any(item.get('exitCode') != 0 or not item.get('bytes')
