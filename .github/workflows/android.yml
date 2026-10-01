@@ -144,7 +144,9 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-boot-timeout: 180
-          emulator-options: -no-window -gpu software -noaudio -no-boot-anim -camera-back none -no-metrics
+          # Select the documented ANGLE/SwiftShader backend explicitly. Auto software
+          # selected legacy GLES SwiftShader 4.0.0.1 in the retained failing Linux runs.
+          emulator-options: -no-window -gpu swangle -noaudio -no-boot-anim -camera-back none -no-metrics
           script: |
             mkdir -p installation
             (cd dist && sha256sum --check SHA256SUMS)

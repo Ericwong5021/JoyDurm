@@ -77,6 +77,11 @@ def run_smoke(output, run_id, timeout_seconds=240):
         ('last-anr.txt', ['adb', 'shell', 'dumpsys', 'activity', 'lastanr']),
         ('anr-traces.txt', ['adb', 'shell', "su 0 sh -c 'cat /data/anr/*'"]),
     ]
+    if Path('/proc/meminfo').is_file():
+        (output / 'host-memory.txt').write_text(Path('/proc/meminfo').read_text())
+        # Hosted Linux CI permits this read-only command without a password. Failure
+        # remains optional; retain VM/OOM evidence independently of adb availability.
+        diagnostics.append(('host-kernel.txt', ['sudo', '-n', 'dmesg', '--time-format=iso']))
     for name, command in diagnostics:
         try:
             with (output / name).open('wb') as stream:

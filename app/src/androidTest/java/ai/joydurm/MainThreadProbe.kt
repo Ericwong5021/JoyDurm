@@ -30,7 +30,9 @@ internal class MainThreadProbe(directory: File, runId: String) : AutoCloseable {
             val delay = SystemClock.elapsedRealtime() - acknowledgedAt
             if (awaiting && delay >= 3_000 && !reported) {
                 reported = true
-                val stacks = Thread.getAllStackTraces().entries.sortedBy { it.key.name }
+                val mainThread = Looper.getMainLooper().thread
+                val stacks = Thread.getAllStackTraces().entries.sortedWith(
+                    compareBy({ if (it.key === mainThread) 0 else 1 }, { it.key.name }))
                 val text = buildString {
                     append("\nSTALLED test=$testName elapsedMs=${SystemClock.elapsedRealtime()} heartbeatDelayMs=$delay\n")
                     stacks.forEach { (thread, frames) ->
@@ -39,7 +41,8 @@ internal class MainThreadProbe(directory: File, runId: String) : AutoCloseable {
                     }
                 }
                 report.appendText(text)
-                Log.e("JoyDurmThreadProbe", text)
+                // Android limits a single Logcat entry; retain every frame on the host.
+                text.chunked(3_000).forEach { Log.e("JoyDurmThreadProbe", it) }
                 // SIGQUIT targets only this test process; ART retains JNI/native stacks too.
                 Process.sendSignal(Process.myPid(), 3)
             }
