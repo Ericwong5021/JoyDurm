@@ -4,6 +4,10 @@ import argparse
 import xml.etree.ElementTree as ET
 
 EXPECTED = {
+    ('ai.joydurm.StageFlowIntegrationTest', 'setupBackNavigationAndMissingImuRemainHonestBeforeTouchPlaying'),
+    ('ai.joydurm.StageFlowIntegrationTest', 'welcomeCanSkipToSoundCheckAndReturnToTouchPlaying'),
+    ('ai.joydurm.StageFlowIntegrationTest', 'denyingCameraKeepsPlayPageAndNativeTouchPadsAvailable'),
+    ('ai.joydurm.StageFlowIntegrationTest', 'devicesKitAndSettingsPreserveAudioControlsAcrossRecreation'),
     ('ai.joydurm.ControllerHubSocketIntegrationTest', 'twoBurstedBatchesDeliverAllSixSourceFramesAndDelayedMotionIsRejected'),
     ('ai.joydurm.MainActivitySmokeTest', 'launchWithoutCameraPermissionAndTouchPadRemainsPlayable'),
     ('ai.joydurm.MainActivitySmokeTest', 'ordinary3DKitIsVisibleInCompositedScreen'),

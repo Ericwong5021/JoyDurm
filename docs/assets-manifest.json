@@ -40,7 +40,7 @@
       "license": "MIT",
       "licenseEvidence": "LICENSE",
       "modifications": "Dependency and original-asset attribution notice",
-      "sha256": "267b43933226379d657fd286bde46d3e3bc8a2f850edd93094d13381dbd2816e"
+      "sha256": "64f8d48b815b7e8c64fe3cc4561429fb7e486845639910e3062ebc4dccd789c3"
     },
     {
       "path": "licenses/APACHE-2.0.txt",
@@ -61,6 +61,26 @@
       "licenseEvidence": "app/src/main/assets/licenses/Filament-THIRD-PARTY-LICENSES.txt",
       "modifications": "Conservative upstream license corpus; not a claim all components are linked",
       "sha256": "882ced9a1a322d1c3b58fb9bb41b4bf2cfc57bd7e908a78ef61b8c91f17a2be3"
+    },
+    {
+      "path": "ui/controllers.png",
+      "author": "JoyDurm contributors",
+      "source": "docs/controller-asset-provenance.json",
+      "sourceVersion": "generation-sha256:f226d93544c2cae4bfe4ca3a4e9ffee9c08ef5257d709d1e5c54f6d2bccf3ac9",
+      "license": "MIT",
+      "licenseEvidence": "LICENSE",
+      "modifications": "Project-generated transparent four-cell controller atlas, cropped at runtime using alpha bounds",
+      "sha256": "f226d93544c2cae4bfe4ca3a4e9ffee9c08ef5257d709d1e5c54f6d2bccf3ac9"
+    },
+    {
+      "path": "ui/kit-preview.png",
+      "author": "JoyDurm contributors",
+      "source": "docs/ui-kit-preview-provenance.json",
+      "sourceVersion": "render-source-png-sha256:a8692ff5e937103b262b6fb1d728bd9b8698db10b6756234dfb1399912549972",
+      "license": "MIT AND CC0-1.0",
+      "licenseEvidence": "NOTICE",
+      "modifications": "Crop of actual unobscured native stage pixels [54,720,1026,1670], Lanczos resize to480x469; same original geometry for all audio banks; no fabricated room or drawing",
+      "sha256": "5f9584c9b94853099b8989424d5d3888d4c2aa5a2642f04bbb7db6b166ea2297"
     }
   ],
   "dependencyAssets": [

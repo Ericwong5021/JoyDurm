@@ -76,9 +76,12 @@ class MainActivitySmokeTest {
                         val scene=views(activity.window.decorView).filterIsInstance<SceneView>().singleOrNull()
                         if(scene!=null && scene.isShown && scene.width>0 && scene.height>0) {
                             val location=IntArray(2); scene.getLocationOnScreen(location)
-                            val inset=minOf(scene.width,scene.height)/20
-                            bounds=Rect(location[0]+inset,location[1]+inset,
-                                location[0]+scene.width-inset,location[1]+scene.height-inset)
+                            // The scene now fills the screen behind the HUD. Its controller
+                            // illustrations are warm too, so sample only the unobstructed center
+                            // between the top status strip and the bottom controls.
+                            val inset=scene.width/20
+                            bounds=Rect(location[0]+inset,location[1]+scene.height*30/100,
+                                location[0]+scene.width-inset,location[1]+scene.height*65/100)
                             diagnostic="scene=$bounds viewport=${scene.view.viewport.width}x${scene.view.viewport.height}"
                             metrics.put("sceneBounds",bounds.toString())
                                 .put("viewportWidth",scene.view.viewport.width).put("viewportHeight",scene.view.viewport.height)
@@ -103,7 +106,8 @@ class MainActivitySmokeTest {
                         val pixel=pixels[y*region.width()+x]
                         val r=(pixel shr 16) and 255; val g=(pixel shr 8) and 255; val b=pixel and 255
                         // The built-in coral shells and brass cymbals are warm; the empty dark
-                        // viewport and all surrounding gray/white UI cannot satisfy this mask.
+                        // viewport and central gray/white UI cannot satisfy this mask. The HUD
+                        // controller artwork is outside the sample region above.
                         if(r>=60 && g>=30 && r>=b+25 && g>=b+8 && r>g)warm++
                         sumR+=r; sumG+=g; sumB+=b; brightest=maxOf(brightest,r,g,b)
                         sampled++

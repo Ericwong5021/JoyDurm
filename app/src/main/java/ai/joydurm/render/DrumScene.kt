@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import com.google.ar.core.Config
 import com.google.ar.core.Plane
 import com.google.ar.core.TrackingState
+import com.google.android.filament.LightManager
 import io.github.sceneview.SceneView
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
@@ -17,6 +18,7 @@ import io.github.sceneview.math.Scale
 import io.github.sceneview.node.Node
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
+import io.github.sceneview.node.LightNode
 import ai.joydurm.core.*
 import java.io.File
 import kotlin.math.*
@@ -41,6 +43,14 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
     @Volatile private var destroyed=false
     private val bases=mutableMapOf<Drum,Position>()
     private val timeline=HitAnimationQueue()
+    // One real Filament light is reused for every hit. Keep it outside kit: a successful
+    // GLB swap destroys the fallback subtree, and an AR anchor moves kit in world space.
+    private val hitLight=LightNode(view.engine,type=LightManager.Type.POINT,apply={
+        color(0.08f,0.45f,1f)
+        intensity(0f)
+        falloff(0.75f)
+        castShadows(false)
+    })
     private val hatMotion=HatVisualInterpolator()
     private var imported: ModelNode?=null
     private var hatTop: Node?=null
@@ -64,7 +74,15 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
     init {
         // An Android background draws over SurfaceView's hole and hides the Filament surface.
         // Color the existing 3D skybox instead; AR keeps its camera background untouched.
-        if(!ar) view.skybox?.setColor(16f/255f,21f/255f,31f/255f,1f)
+        if(!ar) {
+            view.skybox=null
+            // Stage lighting keeps the authored material colors and gives real hit
+            // lights enough contrast; AR retains camera-driven light estimation.
+            view.mainLightNode?.intensity=20_000f
+            view.indirectLight?.intensity=6_000f
+            // Filament takes linear RGB; these values display as the UI's sRGB #080e13.
+            view.renderer.clearOptions=view.renderer.clearOptions.apply { clear=true; clearColor=floatArrayOf(0.002428216f,0.004391442f,0.006512091f,1f) }
+        }
         if(ar) {
             (view as ARSceneView).apply {
                 configureSession { _,config ->
@@ -80,10 +98,11 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
                 }
             }
         } else {
-            view.cameraNode.position=Position(0f,2.5f,3.5f)
+            view.cameraNode.position=Position(0f,2.5f,if(activity.resources.displayMetrics.heightPixels>activity.resources.displayMetrics.widthPixels)7.5f else 3.5f)
             view.cameraNode.lookAt(Position(0f,0.7f,0f))
             view.addChildNode(kit)
         }
+        view.addChildNode(hitLight)
         buildKit()
         runCatching {
             val cached=File(activity.cacheDir,"joydurm-kit.glb")
@@ -166,6 +185,23 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
             if(drum==Drum.KICK) beaterNode?.rotation=Rotation(beaterRotation.x+(-sin(t*22)*exp(-t*9)*40*strength).toFloat(),beaterRotation.y,beaterRotation.z)
         }
         hatTop?.position=Position(hatBase.x,hatBase.y+hatMotion.update(openness,time)*0.09f,hatBase.z)
+        updateHitLight(pulses,time)
+    }
+    private fun updateHitLight(pulses: Map<Drum,VisualPulse>,time: Long) {
+        // Late UI delivery does not restart a flash: envelope time comes from the hit itself.
+        // A single bounded pulse also keeps rapid playing from accumulating GPU entities.
+        val strongest=pulses.entries.filter { (drum,pulse) -> heads.containsKey(drum) && pulse.ageSeconds(time)<0.65 }
+            .maxByOrNull { (_,pulse) -> pulse.velocity*(1.0-pulse.ageSeconds(time)/0.65).pow(2) }
+        if(strongest==null || (ar && !placed)) { hitLight.intensity=0f; return }
+        val (drum,pulse)=strongest
+        val head=heads.getValue(drum)
+        // Use the current transformed head, including kit scaling/yaw and any AR anchor.
+        // The small local offset follows a kick's rotated front head as well as horizontal skins.
+        hitLight.worldPosition=head.getWorldPosition(Position(0f,0.20f,0f))
+        val warm=drum in listOf(Drum.HAT,Drum.CRASH,Drum.RIDE)
+        view.engine.lightManager.setColor(hitLight.lightInstance,if(warm)1f else 0.005f,if(warm)0.54f else 0.08f,if(warm)0.16f else 1f)
+        val envelope=(1.0-pulse.ageSeconds(time)/0.65).coerceIn(0.0,1.0).pow(2)
+        hitLight.intensity=(300_000.0*pulse.velocity*envelope).toFloat()
     }
     fun setPiecePosition(drum: Drum,x: Float,y: Float,z: Float) {
         require(x.isFinite() && y.isFinite() && z.isFinite()) { "鼓件坐标无效" }
@@ -226,7 +262,7 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
             heads.clear(); heads.putAll(newHeads); headBase.clear(); headBase.putAll(newHeadBase)
             headRotation.clear(); headRotation.putAll(newHeadRotation); headScale.clear(); headScale.putAll(newHeadScale)
             hatTop=heads[Drum.HAT]; hatBase=newHatBase; beaterNode=newBeater; beaterRotation=newBeaterRotation
-            timeline.clear(); imported=node; candidate=null
+            timeline.clear(); hitLight.intensity=0f; imported=node; candidate=null
         } catch(error: Throwable) {
             // Do not remove the current model on a candidate validation/load failure.
             candidate?.let { kit.removeChildNode(it) }
@@ -256,6 +292,7 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
         if(destroyed)return
         destroyed=true; view.onFrame=null; timeline.close(); snapshotProvider=null; onLayoutChanged=null
         (view as? ARSceneView)?.apply { onSessionUpdated=null; onSessionFailed=null }
+        view.removeChildNode(hitLight); hitLight.destroy()
         anchor?.let { view.removeChildNode(it); it.removeChildNode(kit); it.destroy() }; anchor=null
         view.removeChildNode(kit)
         imported?.let { kit.removeChildNode(it); view.modelLoader.destroyModel(it.model) }; imported=null

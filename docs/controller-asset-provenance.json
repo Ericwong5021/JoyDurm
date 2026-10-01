@@ -1,0 +1,75 @@
+{
+  "asset": "JoyDurm/app/src/main/assets/ui/controllers.png",
+  "source": "ImageGen image_gen__imagegen",
+  "generatedOn": "2026-10-01",
+  "originalGeneratedFile": "generated_images/exec-6e377ea9-f2f1-4735-a1ae-fb91775e72d5.png",
+  "referenceViewed": "ui-redesign/reference/11921.png",
+  "referenceUse": "Visual inspiration from screen 2. The reference image was viewed before generation; the generated sprite does not reproduce the reference board.",
+  "prompt": "Create a single transparent-background PNG sprite atlas for an Android app, containing exactly FOUR original first-generation Nintendo Switch Joy-Con controllers viewed straight from the front as isolated realistic 3D plastic product illustrations. Landscape aspect ratio 4:1, four equal-width horizontal cells. Controller order left to right: (1) LEFT Joy-Con in bright cyan blue, (2) RIGHT Joy-Con in coral red, (3) LEFT Joy-Con in light lime green, (4) RIGHT Joy-Con in warm lemon yellow. Every controller is upright, identical apparent height and width, vertically centered and horizontally centered precisely in its own quarter of the image, with comfortable fully transparent margins above, below, and on each side. Left models have an upper black round thumbstick and four small round black directional buttons below. Right models have four small round black face buttons above and a black round thumbstick below. Include accurate small dark minus/plus and capture/home buttons, discreet top shoulder contours, rounded outer edge and straight inner rail edge. Authentic original Joy-Con silhouette, narrow tall grip, NOT a newer generation controller. Fine three-dimensional molded plastic texture, cylindrical raised buttons, soft highlights along outer edges and a gentle studio light. Front view with very subtle depth on the edges, no perspective rotation, each silhouette same scale. Sharp clean game UI asset suitable for small phone icons. Absolutely NO text, NO labels, NO lettering, NO battery icons, NO connection status, NO floor, NO scenery, NO accessories, NO decoration, NO background. True alpha transparency outside the four individual controllers, no gray or checkerboard fill. Do not combine controllers; each must remain separate entirely inside its equal quarter-cell.",
+  "toolArguments": {
+    "transparent_background": true
+  },
+  "format": "PNG",
+  "colorMode": "RGBA",
+  "dimensions": {
+    "width": 2172,
+    "height": 724
+  },
+  "byteCount": 881059,
+  "sha256": "f226d93544c2cae4bfe4ca3a4e9ffee9c08ef5257d709d1e5c54f6d2bccf3ac9",
+  "transparency": {
+    "alphaMin": 0,
+    "alphaMax": 255,
+    "trueAlpha": true
+  },
+  "spriteLayout": {
+    "columns": 4,
+    "rows": 1,
+    "cellWidth": 543,
+    "cellHeight": 724,
+    "order": [
+      "cyan left Joy-Con",
+      "coral red right Joy-Con",
+      "lime green left Joy-Con",
+      "warm yellow right Joy-Con"
+    ],
+    "visibleAlphaThreshold8BoundingBoxes": [
+      [
+        173,
+        27,
+        427,
+        692
+      ],
+      [
+        126,
+        27,
+        380,
+        692
+      ],
+      [
+        160,
+        27,
+        417,
+        692
+      ],
+      [
+        126,
+        26,
+        380,
+        692
+      ]
+    ],
+    "boundsCoordinates": "Each bbox is [left,top,right,bottom] relative to its equal-width cell; right/bottom are exclusive."
+  },
+  "validation": {
+    "visuallyInspected": true,
+    "withinCellBounds": true,
+    "noTextOrUi": true,
+    "under2MiB": true
+  },
+  "notes": [
+    "Generated visual reference only; it does not establish or claim hardware support.",
+    "Tiny low-alpha generation artifacts occur outside the visible shapes; alpha > 8 bounds are useful for optical fit if runtime performs trimming.",
+    "The original generated image is retained, and the production asset is copied without image editing."
+  ]
+}

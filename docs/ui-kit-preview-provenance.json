@@ -1,0 +1,19 @@
+{
+  "source": "ui-redesign/screenshots-fixed/ui-play.png",
+  "sourceCaptureSha256": "a8692ff5e937103b262b6fb1d728bd9b8698db10b6756234dfb1399912549972",
+  "runId": "ui-stage-fixed-20261001-7abf2098",
+  "modelSha256": "3f0d77a216789bc1385b57c3458374dfd476cdb85716354f4d540e78665e42a8",
+  "crop": [
+    54,
+    720,
+    1026,
+    1670
+  ],
+  "size": [
+    480,
+    469
+  ],
+  "resampling": "Lanczos; actual screenshot pixels, no drawing/image synthesis",
+  "assetSha256": "5f9584c9b94853099b8989424d5d3888d4c2aa5a2642f04bbb7db6b166ea2297",
+  "geometryBanks": "Same geometry; Studio/Electronic/Lo-fi are audio banks"
+}

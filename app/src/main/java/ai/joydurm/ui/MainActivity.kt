@@ -18,12 +18,14 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.*
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import com.google.ar.core.ArCoreApk
 import ai.joydurm.audio.DrumAudio
 import ai.joydurm.audio.SoundVoice
 import ai.joydurm.core.*
 import ai.joydurm.input.ControllerHub
+import ai.joydurm.input.ConnectionDiagnostics
 import ai.joydurm.input.FrameRecording
 import ai.joydurm.render.DrumScene
 import java.io.File
@@ -49,6 +51,13 @@ class MainActivity: ComponentActivity() {
     private lateinit var message: TextView
     private lateinit var monitor: TextView
     private lateinit var hatBar: ProgressBar
+    private lateinit var stageUi: StageUi
+    private var lastStatus=""
+    private var lastUiUpdateNs=0L
+    private var diagnosticTimeNs=0L
+    private var diagnostic: ConnectionDiagnostics?=null
+    private var hatClosedEpoch: Long?=null
+    private var restoredPage: StagePage?=null
     @Volatile private var bpm=100
     @Volatile private var metronome=false
     @Volatile private var resumed=false
@@ -123,6 +132,7 @@ class MainActivity: ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         store=SettingsStore(this)
+        restoredPage=savedInstanceState?.getString("stagePage")?.let { name -> StagePage.entries.firstOrNull { it.name==name } }
         bpm=store.prefs.getInt("bpm",100).coerceIn(30,240)
         arInstallRequested=savedInstanceState?.getBoolean("arInstallRequested") ?: false
         arRequested=savedInstanceState?.getBoolean("arRequested") ?: false
@@ -131,7 +141,14 @@ class MainActivity: ComponentActivity() {
         audio.kit=store.prefs.getInt("kit",0).coerceIn(0,2); audio.volume=store.prefs.getFloat("volume",0.8f).takeIf { it.isFinite() }?.coerceIn(0f,1f) ?: 0.8f
         engine=DrumEngine(onHatControl={ audio.control(it) }) { event ->
             audio.play(event)
-            main.post { if(isDestroyed)return@post; if(::scene.isInitialized) scene.hit(event); hitCount++; if(::message.isInitialized) message.text="${event.drum.label} · 力度 ${(event.velocity*127).toInt()}" }
+            main.post {
+                if(isDestroyed)return@post
+                if(::scene.isInitialized)scene.hit(event)
+                hitCount++
+                lastStatus="${event.drum.label} · 力度 ${(event.velocity*127).toInt()}"
+                if(::message.isInitialized)message.text=lastStatus
+                if(::stageUi.isInitialized) { stageUi.hit(event.drum,event.velocity); stageUi.refresh(stageState()) }
+            }
         }
         store.load(engine)
         engineExecutor=EngineExecutor(engine)
@@ -142,40 +159,97 @@ class MainActivity: ComponentActivity() {
             val state=e.snapshot()
             if(state.roles[role]?.device==null && state.roles.values.none { it.device==device }) e.assign(role,device)
         } }
-        buildUi(); buildScene(false)
-        if(!store.prefs.getBoolean("onboarded",false) && pendingImport==null && !arInstallRequested) main.post { if(!isDestroyed)onboardingDialog() }
+        buildUi(); darkSystemBars(); buildScene(false)
+        onBackPressedDispatcher.addCallback(this,object: OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() { if(!stageUi.back()) { isEnabled=false; onBackPressedDispatcher.onBackPressed() } }
+        })
         // Restore user samples after the built-in sample loader's serial work has begun.
         for(bank in 0..2) for(d in SoundVoice.importable) store.prefs.getString("wav-$bank-${d.name}",null)?.let { path ->
             val f=File(path); if(f.exists()) runCatching { audio.importWav(f,d,bank) }
         }
     }
     private fun buildUi() {
-        val root=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(16,21,31)); setPadding(dp(12),dp(8),dp(12),dp(8)) }
-        root.setOnApplyWindowInsetsListener { v,insets -> v.setPadding(dp(12)+insets.systemWindowInsetLeft,dp(8)+insets.systemWindowInsetTop,dp(12)+insets.systemWindowInsetRight,dp(8)+insets.systemWindowInsetBottom); insets }
-        val bar=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL }
-        bar.addView(text("JoyDurm",24,true),LinearLayout.LayoutParams(0,dp(48),1f))
-        listOf("设备" to ::devicesDialog,"校准" to ::calibrationDialog,"布局" to ::layoutDialog,"音色" to ::audioDialog).forEach { (name,fn) -> bar.addView(button(name,fn)) }
-        bar.addView(button("AR 相机") { if(scene.ar) buildScene(false) else requestAr() })
-        root.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false; addView(bar) })
-        val middle=LinearLayout(this)
-        sceneHost=FrameLayout(this); middle.addView(sceneHost,LinearLayout.LayoutParams(0,-1,1f))
-        val side=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(12),0,0,0) }
-        side.addView(text("LIVE INPUT",12,true))
-        monitor=text("四个 Joy-Con 尚未绑定",13); side.addView(monitor)
-        side.addView(text("HI-HAT OPEN",11,true))
-        hatBar=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply { max=100 }; side.addView(hatBar)
-        side.addView(button("重新归中") { engineCommand("已归中可用角色；断连和布局变更后请重新标定") { e ->
-            Role.entries.forEach { role -> if(e.snapshot().roles[role]?.latestTimeNs?.let { SystemClock.elapsedRealtimeNanos()-it in 0..500_000_000L }==true) e.recenter(role) }
-        } })
-        side.addView(button("节拍器") { metronome=!metronome; setBeatRunning(metronome); showStatus(if(metronome)"节拍器 $bpm BPM" else "节拍器已关闭") })
-        side.addView(text("触摸下方鼓垫也可演奏\n无需连接硬件",12))
-        middle.addView(ScrollView(this).apply { addView(side) },LinearLayout.LayoutParams(dp(if(resources.configuration.screenWidthDp<600)130 else 190),-1))
-        root.addView(middle,LinearLayout.LayoutParams(-1,0,1f))
-        val pads=LinearLayout(this)
-        Drum.entries.filter { it!=Drum.CHICK }.forEach { d -> pads.addView(button(d.label) { engineCommand { it.trigger(d,timeNs=SystemClock.elapsedRealtimeNanos()) } },LinearLayout.LayoutParams(0,dp(54),1f)) }
-        root.addView(HorizontalScrollView(this).apply { addView(pads,FrameLayout.LayoutParams(max(resources.displayMetrics.widthPixels-dp(24),dp(640)),dp(54))) })
-        message=text("连接 → 绑定四肢 → 校准 → 演奏。AR 需要兼容手机。",12)
-        root.addView(message); setContentView(root)
+        sceneHost=FrameLayout(this)
+        message=text("",12); monitor=text("",13)
+        hatBar=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply { max=100 }
+        stageUi=StageUi(this,sceneHost,stageActions)
+        setContentView(stageUi.root)
+        stageUi.show(restoredPage ?: if(store.prefs.getBoolean("onboarded",false))StagePage.PLAY else StagePage.WELCOME,stageState(),remember=false)
+    }
+    private fun stageState(): StageState {
+        val now=SystemClock.elapsedRealtimeNanos(); val snap=engineExecutor.snapshot()
+        if(::hub.isInitialized && (diagnostic==null || now-diagnosticTimeNs>500_000_000L)) {
+            diagnostic=hub.diagnostics(); diagnosticTimeNs=now
+        }
+        val devices=diagnostic?.devices.orEmpty().associateBy { it.id }
+        val foot=snap.roles[Role.LEFT_FOOT]!!
+        if(foot.needsRecenter || hatClosedEpoch!=foot.epoch.value)hatClosedEpoch=null
+        return StageState(Role.entries.map { role ->
+            val value=snap.roles[role]!!; val device=devices[value.device]
+            StageRole(role,device?.name,value.device!=null,
+                value.latestTimeNs?.let { now-it in 0..500_000_000L }==true,
+                value.calibration!=null,value.needsRecenter,value.targetCount,device?.sampleCount ?: 0,
+                device?.lastSampleTimeNs?.let { (now-it).coerceAtLeast(0)/1_000_000 },device?.lastError,value.threshold)
+        },snap.openness,Math.toDegrees(snap.hatRange),hatClosedEpoch!=null,foot.hatCalibrated,
+            ::scene.isInitialized && scene.ar,::scene.isInitialized && scene.placed,
+            audio.kit,(audio.volume*100).roundToInt(),bpm,metronome,
+            diagnostic?.devices?.count { it.motion } ?: 0,lastStatus,"由 Android 系统管理")
+    }
+    private fun navigate(page: StagePage) { stageUi.show(page,stageState()) }
+    private fun assignRole(role: Role) {
+        val all=hub.devices.values.filter { it.motion }.sortedBy { it.id }
+        if(all.isEmpty()) { showStatus("暂无实时 IMU，请检查连接诊断；也可先用触摸鼓垫演奏"); return }
+        AlertDialog.Builder(this).setTitle("分配${role.label}")
+            .setItems(all.map { "${it.name} · ${it.transport} · ${it.id}" }.toTypedArray()) { _,i ->
+                engineCommand("${role.label} 已绑定，请静置校准并归中") { it.assign(role,all[i].id) }
+            }.show()
+    }
+    private fun bindDirection(role: Role) {
+        val targets=Drum.entries.filter { it!=Drum.KICK && it!=Drum.CHICK }
+        AlertDialog.Builder(this).setTitle("${role.label} 指向鼓件，然后选择")
+            .setItems(targets.map { it.label }.toTypedArray()) { _,i ->
+                engineCommand("已绑定 ${targets[i].label}") { requireFresh(role); it.bindTarget(role,targets[i]) }
+            }.show()
+    }
+    private fun chooseWav() {
+        AlertDialog.Builder(this).setTitle("选择要替换的音色")
+            .setItems(SoundVoice.importable.map { it.label }.toTypedArray()) { _,i ->
+                launchImport(ImportRequest(false,SoundVoice.importable[i],audio.kit))
+            }.show()
+    }
+    private val stageActions=object: StageActions {
+        override fun navigate(page: StagePage)=this@MainActivity.navigate(page)
+        override fun back() { if(!stageUi.back())this@MainActivity.navigate(StagePage.PLAY) }
+        override fun pairBluetooth() {
+            if(Build.VERSION.SDK_INT>=31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=PackageManager.PERMISSION_GRANTED)
+                permissions.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
+            startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+        }
+        override fun connectionDetails()=devicesDialog()
+        override fun assign(role: Role)=assignRole(role)
+        override fun calibrate(role: Role)=this@MainActivity.calibrate(role)
+        override fun recenter(role: Role)=engineCommand("${role.label} 已归中，请绑定鼓件方向") { requireFresh(role); it.recenter(role) }
+        override fun tune(role: Role)=tuningDialog(role)
+        override fun bindTarget(role: Role)=bindDirection(role)
+        override fun captureHatClosed()=engineCommand("已记录闭镲点",onSuccess={ hatClosedEpoch=engineExecutor.snapshot().roles[Role.LEFT_FOOT]!!.epoch.value }) { requireFresh(Role.LEFT_FOOT); it.captureHatClosed() }
+        override fun captureHatOpen()=engineCommand("已记录全开点，请缓慢抬脚验证开度") { requireFresh(Role.LEFT_FOOT); it.captureHatOpen() }
+        override fun toggleAr() { if(scene.ar)buildScene(false) else requestAr() }
+        override fun editLayout()=layoutDialog()
+        override fun resetPlacement() { scene.resetPlacement(); showStatus("扫描并点击地面重新摆放，之后需归中并绑定方向") }
+        override fun trigger(drum: Drum)=engineCommand { it.trigger(drum,timeNs=SystemClock.elapsedRealtimeNanos()) }
+        override fun setKit(index: Int) { audio.kit=index.coerceIn(0,2); store.prefs.edit().putInt("kit",audio.kit).apply(); showStatus("已选择 ${audio.kitNames[audio.kit]}") }
+        override fun setVolume(percent: Int) { audio.volume=percent.coerceIn(0,100)/100f; store.prefs.edit().putFloat("volume",audio.volume).apply() }
+        override fun setTempo(bpm: Int) { this@MainActivity.bpm=bpm.coerceIn(30,240); store.prefs.edit().putInt("bpm",this@MainActivity.bpm).apply(); beatHandler.post { beatClock.setBpm(this@MainActivity.bpm,SystemClock.elapsedRealtimeNanos()) }; showStatus("节拍器 ${this@MainActivity.bpm} BPM") }
+        override fun toggleMetronome() { metronome=!metronome; setBeatRunning(metronome); showStatus(if(metronome)"节拍器 $bpm BPM" else "节拍器已关闭") }
+        override fun importSound()=chooseWav()
+        override fun exportAudioTrace() { importWorker.execute { val f=File(filesDir,"audio-trace.csv"); audio.exportTraceCsv(f); main.post { copy(f.readText(),"音频提交记录（不含声学起音）") } } }
+        override fun importModel()=launchImport(ImportRequest(true,SoundVoice.SNARE,audio.kit))
+        override fun exportImu()=frameExporter.launch("JoyDrum-imu.json")
+        override fun capabilityReport() { importWorker.execute { val report=hub.capabilityReport(); main.post { copy(report,"能力与采样报告") } } }
+        override fun systemAudioSettings() { runCatching { startActivity(Intent(Settings.ACTION_SOUND_SETTINGS)) }.onFailure { showStatus("请在手机系统设置中选择音频输出") } }
+        override fun setSensitivity(role: Role,threshold: Double)=engineCommand { e -> val s=e.snapshot().roles[role]!!; e.tune(role,threshold.coerceIn(0.2,30.0),s.cooldownNs,s.axis,s.sign) }
+        override fun openLegacyCalibration()=calibrationDialog()
+        override fun completeOnboarding() { store.prefs.edit().putBoolean("onboarded",true).apply(); navigate(StagePage.PLAY) }
     }
     private fun buildScene(ar: Boolean) {
         if(importing) { showStatus("模型或音色导入期间请稍后切换场景"); return }
@@ -395,39 +469,51 @@ class MainActivity: ComponentActivity() {
     private val update=object: Runnable { override fun run() {
         if(!resumed)return
         val now=SystemClock.elapsedRealtimeNanos(); val snapshot=engineExecutor.snapshot()
-        monitor.text=Role.entries.joinToString("\n\n") { r -> val s=snapshot.roles[r]!!; val live=s.latestTimeNs?.let { now-it in 0..500_000_000L }==true
-            "${if(live)"●" else "○"} ${r.label}\n${if(s.status==OrientationStatus.NEEDS_RECENTER && live)"需要归中" else if(live && r==Role.LEFT_FOOT && !s.hatCalibrated)"需标定开闭两点" else if(live)"实时数据" else if(s.device!=null)"等待数据" else "未绑定"}${if(s.calibration!=null)" · 已校准" else ""}" }
-        hatBar.progress=(snapshot.openness*100).toInt(); scene.openness=snapshot.openness
+        scene.openness=snapshot.openness
+        if(now-lastUiUpdateNs>=100_000_000L) { stageUi.refresh(stageState()); lastUiUpdateNs=now }
         sceneHost.postOnAnimation(this)
     } }
     override fun onResume() {
         super.onResume(); resumed=true; audio.resume(); hub.start()
+        darkSystemBars()
         if(store.prefs.getBoolean("bridge",false)) runCatching { hub.listenBridge(store.prefs.getInt("port",18185),store.prefs.getString("token","")!!) }.onFailure { showStatus("桥接启动失败：${it.message}") }
         sceneHost.postOnAnimation(update); if(metronome)setBeatRunning(true)
         if(arInstallRequested && checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)enableAr()
     }
+    @Suppress("DEPRECATION")
+    private fun darkSystemBars() {
+        if(Build.VERSION.SDK_INT>=30) {
+            window.insetsController?.setSystemBarsAppearance(0,
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                    android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS)
+        } else {
+            window.decorView.systemUiVisibility=window.decorView.systemUiVisibility and
+                (View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR).inv()
+        }
+    }
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("stagePage",stageUi.page.name)
         outState.putBoolean("arInstallRequested",arInstallRequested)
         outState.putBoolean("arRequested",arRequested)
         pendingImport?.let { outState.putBoolean("pendingModel",it.model); outState.putString("pendingDrum",it.voice.name); outState.putInt("pendingBank",it.bank) }
         super.onSaveInstanceState(outState)
     }
     override fun onPause() { activeCalibrationDialog?.dismiss(); resumed=false; hub.stop(); sceneHost.removeCallbacks(update); setBeatRunning(false); audio.pause(); engineCommand { }; if(::scene.isInitialized)store.saveScene(scene); super.onPause() }
-    override fun onDestroy() { sceneGeneration++; importWorker.shutdown(); main.removeCallbacksAndMessages(null); hub.stop(); engineExecutor.close(); beatThread.quitSafely(); audio.close(); scene.destroy(); super.onDestroy() }
+    override fun onDestroy() { if(::stageUi.isInitialized)stageUi.close(); sceneGeneration++; importWorker.shutdown(); main.removeCallbacksAndMessages(null); hub.stop(); engineExecutor.close(); beatThread.quitSafely(); audio.close(); scene.destroy(); super.onDestroy() }
     override fun onKeyDown(keyCode: Int,event: KeyEvent): Boolean {
         val drum=when(keyCode) { KeyEvent.KEYCODE_A,KeyEvent.KEYCODE_BUTTON_A -> Drum.SNARE; KeyEvent.KEYCODE_S,KeyEvent.KEYCODE_BUTTON_B -> Drum.KICK; KeyEvent.KEYCODE_D,KeyEvent.KEYCODE_BUTTON_X -> Drum.HAT; KeyEvent.KEYCODE_F,KeyEvent.KEYCODE_BUTTON_Y -> Drum.CRASH; else -> null }
         if(drum!=null && event.repeatCount==0) { engineCommand { it.trigger(drum,timeNs=SystemClock.elapsedRealtimeNanos()) }; return true }; return super.onKeyDown(keyCode,event)
     }
-    private fun engineCommand(success: String?=null, action: (DrumEngine)->Unit) {
+    private fun engineCommand(success: String?=null, onSuccess: (()->Unit)?=null, action: (DrumEngine)->Unit) {
         if(!::engineExecutor.isInitialized)return
         engineExecutor.call { e -> action(e); store.save(e.snapshot()) }.whenComplete { _,error ->
-            if(error!=null)showStatus(error.cause?.message ?: error.message ?: "操作失败") else if(success!=null)showStatus(success)
+            if(error!=null)showStatus(error.cause?.message ?: error.message ?: "操作失败") else { if(success!=null)showStatus(success); if(onSuccess!=null)main.post { if(!isDestroyed)onSuccess.invoke() } }
         }
     }
-    private fun showStatus(msg: String) { main.post { if(!isDestroyed && ::message.isInitialized) message.text=msg } }
+    private fun showStatus(msg: String) { main.post { if(!isDestroyed) { lastStatus=msg; if(::message.isInitialized)message.text=msg; if(::stageUi.isInitialized)stageUi.refresh(stageState()) } } }
     private fun dp(v: Int)=(v*resources.displayMetrics.density).roundToInt()
     private fun text(value: String,size: Int=14,bold: Boolean=false)=TextView(this).apply { text=value; textSize=size.toFloat(); setTextColor(Color.rgb(226,230,239)); setPadding(dp(6),dp(6),dp(6),dp(6)); if(bold)setTypeface(typeface,android.graphics.Typeface.BOLD) }
-    private fun button(label: String,action: ()->Unit)=Button(this).apply { text=label; textSize=12f; isAllCaps=false; minWidth=0; minimumWidth=0; setOnClickListener { action() } }
+    private fun button(label: String,action: ()->Unit)=StageTheme(this).secondary(label,action)
     private fun field(hint: String,value: String)=EditText(this).apply {
         this.hint=hint; contentDescription=hint; setText(value); isSingleLine=true; textSize=14f
         addOnAttachStateChangeListener(object: View.OnAttachStateChangeListener {

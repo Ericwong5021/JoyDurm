@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 
-from verify_instrumentation import verify
+from verify_instrumentation import EXPECTED, verify
 
 
 def run_smoke(output, run_id, timeout_seconds=240):
@@ -64,8 +64,8 @@ def run_smoke(output, run_id, timeout_seconds=240):
     (output / 'runner-status.json').write_text(json.dumps(status, indent=2) + '\n')
     if status['timedOut'] or status['runnerExitCode'] != 0:
         raise ValueError('Android runner timed out or failed; diagnostics were retained')
-    if 'OK (7 tests)' not in (output / 'instrumentation.txt').read_text():
-        raise ValueError('Android runner did not finish all seven tests')
+    if f'OK ({len(EXPECTED)} tests)' not in (output / 'instrumentation.txt').read_text():
+        raise ValueError('Android runner did not finish all required tests')
     if any(item.get('exitCode') != 0 or not item.get('bytes')
            for item in status['captures'].values()):
         raise ValueError('Required Android evidence could not be collected')
