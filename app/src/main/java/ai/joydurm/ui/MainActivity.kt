@@ -179,7 +179,7 @@ class MainActivity: ComponentActivity() {
     }
     private fun buildScene(ar: Boolean) {
         if(importing) { showStatus("模型或音色导入期间请稍后切换场景"); return }
-        if(::scene.isInitialized) { store.saveScene(scene); sceneHost.removeAllViews(); scene.destroy() }
+        if(::scene.isInitialized) { store.saveScene(scene); scene.destroy(); sceneHost.removeAllViews() }
         scene=DrumScene(this,ar,{ drum -> engineCommand { it.trigger(drum,timeNs=SystemClock.elapsedRealtimeNanos()) } },::showStatus)
         val generation=++sceneGeneration
         val current=scene

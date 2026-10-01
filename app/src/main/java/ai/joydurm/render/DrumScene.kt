@@ -23,7 +23,13 @@ import kotlin.math.*
 
 /** SceneView owns rendering, hit testing, camera tracking, materials and GLB loading. */
 class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private val hit: (Drum)->Unit,private val status: (String)->Unit) {
-    val view: SceneView = if(ar) ARSceneView(activity,sharedLifecycle=activity.lifecycle) else SceneView(activity,sharedLifecycle=activity.lifecycle)
+    // Lifecycle destruction and view detachment can precede Activity.onDestroy.
+    // Retire our nodes/model while Filament is alive on every SceneView destruction path.
+    val view: SceneView = if(ar) object : ARSceneView(activity,sharedLifecycle=activity.lifecycle) {
+        override fun destroy() { try { destroyContent() } finally { super.destroy() } }
+    } else object : SceneView(activity,sharedLifecycle=activity.lifecycle) {
+        override fun destroy() { try { destroyContent() } finally { super.destroy() } }
+    }
     val kit=Node(view.engine)
     private var anchor: AnchorNode?=null
     private val pieces=mutableMapOf<Drum,Node>()
@@ -243,13 +249,14 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
         hatBase=hatTop?.position ?: Position(); beaterRotation=beaterNode?.rotation ?: Rotation()
     }
     private fun destroyTree(node: Node) { node.childNodes.toList().forEach(::destroyTree); node.destroy() }
-    fun destroy() {
+    fun destroy() = view.destroy()
+    private fun destroyContent() {
         if(destroyed)return
         destroyed=true; view.onFrame=null; timeline.close(); snapshotProvider=null; onLayoutChanged=null
         (view as? ARSceneView)?.apply { onSessionUpdated=null; onSessionFailed=null }
         anchor?.let { view.removeChildNode(it); it.removeChildNode(kit); it.destroy() }; anchor=null
         view.removeChildNode(kit)
         imported?.let { kit.removeChildNode(it); view.modelLoader.destroyModel(it.model) }; imported=null
-        destroyTree(kit); view.destroy()
+        destroyTree(kit)
     }
 }
