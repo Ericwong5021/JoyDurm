@@ -26,6 +26,7 @@ class AndroidRunnerFailureTest(unittest.TestCase):
             self.assertIn('graphics driver stalled', (Path(directory) / 'logcat.txt').read_text())
             self.assertTrue(any('force-stop' in command for command in calls))
             self.assertEqual(4, len(status['captures']))
+            self.assertIn('thread-stalls.txt', status['diagnosticCaptures'])
 
     def test_zero_exit_without_finished_runner_is_rejected_and_evidence_saved(self):
         def adb(command, **kwargs):
@@ -39,3 +40,5 @@ class AndroidRunnerFailureTest(unittest.TestCase):
             self.assertEqual(0, status['runnerExitCode'])
             self.assertEqual(4, len(status['captures']))
             self.assertTrue((Path(directory) / 'logcat.txt').stat().st_size)
+            self.assertTrue((Path(directory) / 'thread-stalls.txt').stat().st_size)
+            self.assertIn('last-anr.txt', status['diagnosticCaptures'])

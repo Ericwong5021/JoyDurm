@@ -23,7 +23,7 @@ def run_smoke(output, run_id, timeout_seconds=240):
                '-e', 'listener', 'ai.joydurm.SmokeXmlListener',
                'ai.joydurm.test/androidx.test.runner.AndroidJUnitRunner']
     status = dict(runId=run_id, timeoutSeconds=timeout_seconds, timedOut=False,
-                  runnerExitCode=None, captures={})
+                  runnerExitCode=None, captures={}, diagnosticCaptures={})
     with (output / 'instrumentation.txt').open('wb') as stream:
         try:
             result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
@@ -55,6 +55,22 @@ def run_smoke(output, run_id, timeout_seconds=240):
                                             bytes=(output / name).stat().st_size)
         except subprocess.TimeoutExpired:
             status['captures'][name] = dict(timedOut=True)
+    # Optional diagnostics never turn an incomplete run into a passing run. The test-only
+    # heartbeat writes before Android kills an unresponsive instrumentation process.
+    diagnostics = [
+        ('thread-stalls.txt', ['adb', 'exec-out', 'run-as', 'ai.joydurm', 'cat',
+                              'files/test-reports/thread-stalls.txt']),
+        ('last-anr.txt', ['adb', 'shell', 'dumpsys', 'activity', 'lastanr']),
+        ('anr-traces.txt', ['adb', 'shell', "su 0 sh -c 'cat /data/anr/*'"]),
+    ]
+    for name, command in diagnostics:
+        try:
+            with (output / name).open('wb') as stream:
+                result = subprocess.run(command, stdout=stream, stderr=subprocess.PIPE, timeout=15)
+            status['diagnosticCaptures'][name] = dict(exitCode=result.returncode,
+                                                     bytes=(output / name).stat().st_size)
+        except subprocess.TimeoutExpired:
+            status['diagnosticCaptures'][name] = dict(timedOut=True)
     if status['timedOut']:
         try:
             # Killing the local adb client does not stop a remote instrumentation process.

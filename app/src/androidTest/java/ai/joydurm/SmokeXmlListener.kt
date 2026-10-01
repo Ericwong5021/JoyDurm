@@ -12,10 +12,19 @@ import java.io.File
 class SmokeXmlListener : RunListener() {
     private data class Test(val description: Description, val started: Long, var duration: Long = 0, var failure: Failure? = null)
     private val tests = linkedMapOf<String, Test>()
-    override fun testStarted(description: Description) { tests[description.displayName] = Test(description, System.nanoTime()) }
+    private var probe: MainThreadProbe? = null
+    override fun testRunStarted(description: Description) {
+        val directory = File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "test-reports").apply { mkdirs() }
+        probe = MainThreadProbe(directory, InstrumentationRegistry.getArguments().getString("joydurmRunId") ?: "missing")
+    }
+    override fun testStarted(description: Description) {
+        probe?.testName = description.displayName
+        tests[description.displayName] = Test(description, System.nanoTime())
+    }
     override fun testFailure(failure: Failure) { tests[failure.description.displayName]?.failure = failure }
     override fun testFinished(description: Description) { tests[description.displayName]?.let { it.duration = System.nanoTime() - it.started } }
     override fun testRunFinished(result: Result) {
+        probe?.close()
         val directory = File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "test-reports").apply { mkdirs() }
         File(directory, "smoke-tests.xml").outputStream().use { stream ->
             val xml = Xml.newSerializer().apply { setOutput(stream, "UTF-8"); startDocument("UTF-8", true) }
