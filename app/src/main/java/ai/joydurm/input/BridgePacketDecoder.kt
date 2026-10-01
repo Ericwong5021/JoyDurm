@@ -15,7 +15,11 @@ data class BridgeDecodeResult(val batches: List<BridgeBatch> = emptyList(), val 
 data class BridgeStatistics(val acceptedPackets: Long, val rejectedPackets: Long, val deliveredSamples: Long,
     val staleSamples: Long, val duplicatePackets: Long, val reorderedPackets: Long, val missingPackets: Long,
     val unsynchronizedPackets: Long, val retiredSessionPackets: Long, val queueOverflows: Long,
-    val rejectedClockExchanges: Long = 0, val lastRejection: String? = null)
+    val rejectedClockExchanges: Long = 0, val lastRejection: String? = null,
+    /** Cumulative matched exchanges that passed the clock mapper's unchanged bounds. */
+    val acceptedClockExchanges: Long = 0,
+    /** Endpoints whose clock remains valid at the explicitly supplied diagnostic time. */
+    val synchronizedClockCount: Int = 0)
 
 /** Serialized by its owner. Keeps source clocks, physical identity and sessions separate. */
 class BridgePacketDecoder(private val token: String) {
@@ -31,9 +35,13 @@ class BridgePacketDecoder(private val token: String) {
     private var stale = 0L; private var duplicates = 0L; private var reordered = 0L; private var missing = 0L
     private var unsynced = 0L; private var retired = 0L; private var overflows = 0L
     private var clockRejected = 0L; private var lastRejection: String? = null
+    private var clockAccepted = 0L; private var observedNowNs = 0L
 
-    fun statistics() = BridgeStatistics(accepted,rejected,delivered,stale,duplicates,reordered,missing,unsynced,retired,overflows,clockRejected,lastRejection)
+    /** Production diagnostics supply current elapsedRealtimeNanos; JVM traces use their injected clock. */
+    fun statistics(nowNs: Long = observedNowNs) = BridgeStatistics(accepted,rejected,delivered,stale,duplicates,reordered,missing,unsynced,retired,overflows,
+        clockRejected,lastRejection,clockAccepted,clocks.values.count { it.mapper.valid(nowNs) })
     fun receive(payload: ByteArray, endpoint: String, receivedNs: Long): BridgeDecodeResult {
+        observedNowNs = maxOf(observedNowNs,receivedNs)
         val requests = mutableListOf<BridgeSyncRequest>()
         val lost = mutableListOf<String>()
         try {
@@ -54,6 +62,7 @@ class BridgePacketDecoder(private val token: String) {
                 if (!clock.mapper.synchronize(sent,long(json,"sourceReceiveNs"),long(json,"sourceSendNs"),receivedNs)) {
                     clockRejected++; error(clock.mapper.lastError ?: "Clock exchange rejected")
                 }
+                clockAccepted++
                 clock.nonce = null
                 return poll(receivedNs)
             }
@@ -119,6 +128,7 @@ class BridgePacketDecoder(private val token: String) {
     }
 
     fun poll(nowNs: Long): BridgeDecodeResult {
+        observedNowNs = maxOf(observedNowNs,nowNs)
         val batches = mutableListOf<BridgeBatch>()
         for (state in devices.values) {
             while (state.pending.isNotEmpty()) {

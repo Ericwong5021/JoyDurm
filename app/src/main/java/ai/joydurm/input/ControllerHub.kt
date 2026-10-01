@@ -107,14 +107,14 @@ class ControllerHub(private val context: Context, private val sample: (ImuSample
         context.getSystemService(BluetoothManager::class.java)?.adapter?.bondedDevices?.map { "${it.name ?: "Bluetooth"} · ${it.address}" } ?: emptyList()
     } catch (_: SecurityException) { listOf("请授予附近设备权限") }
 
-    fun capabilityReport(): String = handler?.let { onInput(it) { probe.report(decoder?.statistics()) } } ?: probe.report()
+    fun capabilityReport(): String = handler?.let { onInput(it) { probe.report(decoder?.statistics(SystemClock.elapsedRealtimeNanos())) } } ?: probe.report()
     fun diagnostics(): ConnectionDiagnostics {
         val addresses = runCatching { NetworkInterface.getNetworkInterfaces().toList().flatMap { it.inetAddresses.toList() }
             .filterIsInstance<Inet4Address>().filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }.mapNotNull { it.hostAddress }.distinct() }.getOrDefault(emptyList())
         val h = handler ?: return ConnectionDiagnostics(false,false,null,0,0,emptyList(),addresses)
         return onInput(h) {
             val now = SystemClock.elapsedRealtimeNanos(); expire(now)
-            val statistics = decoder?.statistics()
+            val statistics = decoder?.statistics(now)
             ConnectionDiagnostics(running,udp?.isClosed==false,udp?.takeUnless { it.isClosed }?.localPort,
                 statistics?.acceptedPackets ?: 0,(statistics?.rejectedPackets ?: 0) + queueDrops.get(),
                 devices.values.sortedBy { it.id }.map { d ->
@@ -213,10 +213,16 @@ class ControllerHub(private val context: Context, private val sample: (ImuSample
         devices.keys.filter { it.startsWith("bridge:") }.forEach { lose(it,"桥接监听已关闭",remove=true) }
     }
     fun listenBridge(port: Int, token: String) {
+        require(port in 1024..65535) { "端口应为 1024–65535" }
+        listenBridgeInternal(port,token)
+    }
+    /** Atomically reserves an OS-selected port; callers read bridgePort from diagnostics. */
+    fun listenBridgeOnAvailablePort(token: String) = listenBridgeInternal(0,token)
+    private fun listenBridgeInternal(port: Int, token: String) {
         val h = handler ?: error("请先启动设备监听")
         onInput(h) {
             require(running) { "请先启动设备监听" }
-            require(port in 1024..65535 && token.length>=16) { "端口应为 1024–65535；令牌至少 16 字符" }
+            require((port == 0 || port in 1024..65535) && token.length>=16) { "端口应为 1024–65535；令牌至少 16 字符" }
             closeBridgeInternal()
             val socket = DatagramSocket(port).apply { soTimeout=500 }; udp = socket
             decoder = BridgePacketDecoder(token); queueDrops.set(0)
@@ -243,7 +249,7 @@ class ControllerHub(private val context: Context, private val sample: (ImuSample
                     h.post { if (udp===socket) { closeBridgeInternal(); status("桥接监听已中断") } }; break
                 }
             }
-            status("桥接监听已开启 · UDP $port · 协议 v2")
+            status("桥接监听已开启 · UDP ${socket.localPort} · 协议 v2")
         }
     }
     private fun handleBridge(result: BridgeDecodeResult) {

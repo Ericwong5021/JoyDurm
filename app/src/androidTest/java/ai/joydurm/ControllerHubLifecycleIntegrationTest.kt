@@ -9,9 +9,6 @@ import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -28,8 +25,8 @@ class ControllerHubLifecycleIntegrationTest {
         try {
             repeat(5) {
                 hub.start()
-                val port = DatagramSocket(0).use { it.localPort }
-                hub.listenBridge(port, token)
+                hub.listenBridgeOnAvailablePort(token)
+                assertTrue(hub.diagnostics().bridgePort!! in 1024..65535)
                 assertTrue(hub.diagnostics().bridgeRunning)
                 assertEquals("HARDWARE_PENDING", JSONObject(hub.capabilityReport()).getString("status"))
                 hub.stop()
@@ -37,25 +34,11 @@ class ControllerHubLifecycleIntegrationTest {
                 assertFalse(hub.diagnostics().bridgeRunning)
             }
             hub.start()
-            val port = DatagramSocket(0).use { it.localPort }
-            hub.listenBridge(port, token)
-            DatagramSocket(0, InetAddress.getLoopbackAddress()).use { socket ->
-                socket.soTimeout = 3_000
-                fun send(json: JSONObject) {
-                    val bytes = json.toString().toByteArray()
-                    socket.send(DatagramPacket(bytes, bytes.size, InetAddress.getLoopbackAddress(), port))
-                }
-                // Unsynchronized motion is rejected and answered at the sender's real UDP source port.
-                send(JSONObject().put("v", 2).put("type", "motion").put("token", token))
-                val packet = DatagramPacket(ByteArray(8192), 8192)
-                socket.receive(packet)
-                assertEquals(port, packet.port)
-                val sync = JSONObject(String(packet.data, 0, packet.length))
-                assertEquals("sync", sync.getString("type"))
-                val sourceReceive = SystemClock.elapsedRealtimeNanos()
-                send(JSONObject().put("v", 2).put("type", "sync_reply").put("token", token)
-                    .put("nonce", sync.getString("nonce")).put("clientSendNs", sync.getLong("clientSendNs"))
-                    .put("sourceReceiveNs", sourceReceive).put("sourceSendNs", SystemClock.elapsedRealtimeNanos()))
+            hub.listenBridgeOnAvailablePort(token)
+            val port = hub.diagnostics().bridgePort!!
+            UdpClockTestSource(hub, port, token).use { source ->
+                source.awaitVerifiedClock()
+                assertEquals(0, samples.get())
                 val sourceRead = SystemClock.elapsedRealtimeNanos()
                 val frames = JSONArray()
                 repeat(3) { index ->
@@ -63,7 +46,7 @@ class ControllerHubLifecycleIntegrationTest {
                         .put("ax", 0.0).put("ay", 0.0).put("az", 9.80665)
                         .put("gx", 0.0).put("gy", 0.0).put("gz", 0.0))
                 }
-                send(JSONObject().put("v", 2).put("type", "motion").put("token", token)
+                source.send(JSONObject().put("v", 2).put("type", "motion").put("token", token)
                     .put("device", "instrumentation-simulator").put("sessionId", UUID.randomUUID().toString())
                     .put("identityStable", false).put("identitySource", "simulator")
                     .put("seq", 0L).put("timer", 1).put("sourceReadNs", sourceRead).put("samples", frames))

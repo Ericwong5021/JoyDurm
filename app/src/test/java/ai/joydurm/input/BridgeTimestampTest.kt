@@ -97,4 +97,19 @@ class BridgeTimestampTest {
         }
         assertEquals(24L,d.statistics().deliveredSamples)
     }
+    @Test fun readinessRequiresSuccessfulExchangeAndCurrentClockValidity() {
+        val d=BridgePacketDecoder(TOKEN)
+        val first=d.receive(motion(0,listOf(BASE+OFFSET)),ENDPOINT,BASE).syncRequests.single()
+        d.receive(syncReply(first.json),ENDPOINT,BASE+31_000_000L)
+        assertEquals(0L,d.statistics(BASE+31_000_000L).acceptedClockExchanges)
+        assertEquals(0,d.statistics(BASE+31_000_000L).synchronizedClockCount)
+        val retryTime=BASE+2_000_000_000L
+        val retry=d.receive(motion(0,listOf(retryTime+OFFSET)),ENDPOINT,retryTime).syncRequests.single()
+        d.receive(syncReply(retry.json),ENDPOINT,retryTime)
+        assertEquals(1L,d.statistics(retryTime).acceptedClockExchanges)
+        assertEquals(1,d.statistics(retryTime).synchronizedClockCount)
+        val expired=retryTime+SampleClockMapper.VALID_FOR_NS+1
+        assertEquals(1L,d.statistics(expired).acceptedClockExchanges)
+        assertEquals(0,d.statistics(expired).synchronizedClockCount)
+    }
 }

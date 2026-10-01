@@ -79,6 +79,7 @@ class CapabilityProbe {
                 .put("clockValiditySeconds",10).put("exchangeIntervalSeconds",2).put("assumedClockDriftPpm",100)
                 .put("clockDriftHardwareVerified",false)
                 .put("unsynchronizedPackets",bridge?.unsynchronizedPackets ?: 0).put("rejectedClockExchanges",bridge?.rejectedClockExchanges ?: 0)
+                .put("acceptedClockExchanges",bridge?.acceptedClockExchanges ?: 0).put("synchronizedClockCount",bridge?.synchronizedClockCount ?: 0)
                 .put("lastRejection",bridge?.lastRejection ?: JSONObject.NULL))
             .toString(2)
     }
