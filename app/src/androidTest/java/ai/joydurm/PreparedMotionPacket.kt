@@ -25,15 +25,26 @@ internal class PreparedMotionPacket(json: JSONObject) {
 
     fun stamp(sourceReadNs: Long, offsetsNs: LongArray): ByteArray {
         require(sourceReadNs >= 0 && offsetsNs.size == samples)
-        positions.forEachIndexed { index, position ->
+        for(index in positions.indices) {
+            val position=positions[index]
             val value = if (index == 0) sourceReadNs else sourceReadNs + offsetsNs[index - 1]
             require(value in 0..sourceReadNs)
             // JSON permits whitespace before a number. Fixed-width fields avoid JSON
             // allocation/serialization after acquisition without inventing arrival times.
-            bytes.fill(' '.code.toByte(), position, position + 19)
-            val number = value.toString().toByteArray(Charsets.US_ASCII)
-            number.copyInto(bytes, position + 19 - number.size)
+            stampJsonLong(bytes,position,value)
         }
         return bytes
     }
+}
+
+/** Stamp a preallocated ASCII JSON field without allocating after source acquisition. */
+internal fun stampJsonLong(bytes: ByteArray, position: Int, value: Long) {
+    require(value>=0 && position>=0 && position+19<=bytes.size)
+    bytes.fill(' '.code.toByte(),position,position+19)
+    var remaining=value
+    var cursor=position+18
+    do {
+        bytes[cursor--]=('0'.code+(remaining%10).toInt()).toByte()
+        remaining/=10
+    } while(remaining>0)
 }

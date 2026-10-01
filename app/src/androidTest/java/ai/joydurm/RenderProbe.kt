@@ -62,6 +62,13 @@ internal class RenderProbe private constructor(private val scene: SceneView) : A
                         report.put("surfaceWarmPixels",warm).put("surfaceBrightest",brightest)
                         File(directory,"$label-surface.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG,100,it) }
                     }
+                    if(completed.count==0L && status==PixelCopy.ERROR_SOURCE_NO_DATA) {
+                        // Capture the native driver while the failed surface is still alive.
+                        // A dump during Activity.close() instead shows teardown waits.
+                        android.os.Process.sendSignal(android.os.Process.myPid(),3)
+                        SystemClock.sleep(300)
+                        report.put("nativeThreadsRequested",true)
+                    }
                 } catch(error: Exception) { pending=false; report.put("pixelCopyError",error.toString()) }
             } finally {
                 // A timed-out copy may still own its destination. Retire after its

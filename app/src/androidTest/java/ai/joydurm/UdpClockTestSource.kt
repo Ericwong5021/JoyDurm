@@ -36,8 +36,17 @@ internal class UdpClockTestSource(private val hub: ControllerHub, private val po
             val reply=JSONObject().put("v",2).put("type","sync_reply").put("token",token)
                 .put("nonce",request.getString("nonce")).put("clientSendNs",request.getLong("clientSendNs"))
                 .put("sourceReceiveNs",sourceReceive)
-            reply.put("sourceSendNs",SystemClock.elapsedRealtimeNanos())
-            send(reply)
+            // Serialization belongs to source processing, before the actual send clock.
+            // A timestamp captured before toString() falsely counts cold JSON/JIT work
+            // as network RTT and biases an otherwise valid four-clock exchange.
+            val marker=Long.MAX_VALUE.toString()
+            val text=reply.put("sourceSendNs",Long.MAX_VALUE).toString()
+            val bytes=text.toByteArray(Charsets.UTF_8)
+            val position=String(bytes,Charsets.US_ASCII).indexOf(marker)
+            check(position>=0)
+            val datagram=DatagramPacket(bytes,bytes.size,InetAddress.getLoopbackAddress(),port)
+            stampJsonLong(bytes,position,SystemClock.elapsedRealtimeNanos())
+            socket.send(datagram)
         } catch (_: SocketTimeoutException) { /* bounds shutdown latency even if no requests arrive */ }
         catch (error: Throwable) {
             if(active) failure.compareAndSet(null,error)
