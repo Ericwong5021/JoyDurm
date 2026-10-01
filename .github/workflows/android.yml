@@ -176,8 +176,14 @@ jobs:
           # composition. Direct Mesa OpenGL is a controlled backend comparison;
           # all original8s/pixel/source-clock assertions remain required.
           emulator-options: -no-window -gpu host -feature -Vulkan -noaudio -no-boot-anim -camera-back none -no-metrics
+          # Both ANGLE and direct Mesa blocked in per-uniform QemuPipeStream
+          # round trips. Compare ASG shared-memory transport with the same GL
+          # renderer, VM capacity and original acceptance deadlines.
+          pre-emulator-launch-script: python3 tools/verification/configure_graphics_transport.py
           script: |
             mkdir -p installation
+            adb shell getprop ro.boot.hardware.gltransport > installation/guest-gltransport.txt
+            test "$(tr -d '\r\n' < installation/guest-gltransport.txt)" = asg
             nproc > installation/host-cpu-count.txt
             ps -eLo pid,tid,comm > installation/host-threads.txt
             (cd dist && sha256sum --check SHA256SUMS)

@@ -32,6 +32,8 @@ class AndroidRunnerFailureTest(unittest.TestCase):
             self.assertTrue(any('force-stop' in command for command in calls))
             self.assertEqual(4, len(status['captures']))
             self.assertIn('thread-stalls.txt', status['diagnosticCaptures'])
+            self.assertIn('ordinary-3d-render-probe.json', status['diagnosticCaptures'])
+            self.assertIn('ui-play-render-probe.json', status['diagnosticCaptures'])
 
     def test_zero_exit_without_finished_runner_is_rejected_and_evidence_saved(self):
         def adb(command, **kwargs):

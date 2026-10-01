@@ -97,6 +97,13 @@ def run_smoke(output, run_id, timeout_seconds=240):
         ('last-anr.txt', ['adb', 'shell', 'dumpsys', 'activity', 'lastanr']),
         ('anr-traces.txt', ['adb', 'shell', "su 0 sh -c 'cat /data/anr/*'"]),
     ]
+    # A timeout precedes testRunFinished, so its evidence stream is absent.
+    # Preserve the already-written live-surface probes via bounded fallback;
+    # optional diagnostics cannot satisfy any required acceptance gate.
+    for name in ('ordinary-3d-render-probe.json', 'ui-play-render-probe.json',
+                 'ui-welcome-render-probe.json', 'ui-failed-play.png', 'ui-failed-welcome.png'):
+        diagnostics.append((name, ['adb', 'exec-out', 'run-as', 'ai.joydurm', 'cat',
+                                  'files/test-reports/' + name]))
     if Path('/proc/meminfo').is_file():
         (output / 'host-memory.txt').write_text(Path('/proc/meminfo').read_text())
         # Hosted Linux CI permits this read-only command without a password. Failure
