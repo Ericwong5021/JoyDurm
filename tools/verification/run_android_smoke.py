@@ -67,6 +67,7 @@ def run_smoke(output, run_id, timeout_seconds=240):
                 result = subprocess.run(command, stdout=stream, stderr=subprocess.PIPE, timeout=15)
             status['captures'][name] = dict(exitCode=result.returncode,
                                             bytes=(output / name).stat().st_size)
+            (output / (name + '.stderr')).write_bytes(result.stderr or b'')
         except subprocess.TimeoutExpired:
             status['captures'][name] = dict(timedOut=True)
     # Optional diagnostics never turn an incomplete run into a passing run. The test-only
@@ -88,6 +89,7 @@ def run_smoke(output, run_id, timeout_seconds=240):
                 result = subprocess.run(command, stdout=stream, stderr=subprocess.PIPE, timeout=15)
             status['diagnosticCaptures'][name] = dict(exitCode=result.returncode,
                                                      bytes=(output / name).stat().st_size)
+            (output / (name + '.stderr')).write_bytes(result.stderr or b'')
         except subprocess.TimeoutExpired:
             status['diagnosticCaptures'][name] = dict(timedOut=True)
     if status['timedOut']:
