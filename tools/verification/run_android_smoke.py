@@ -24,13 +24,27 @@ def run_smoke(output, run_id, timeout_seconds=240):
                'ai.joydurm.test/androidx.test.runner.AndroidJUnitRunner']
     status = dict(runId=run_id, timeoutSeconds=timeout_seconds, timedOut=False,
                   runnerExitCode=None, captures={}, diagnosticCaptures={})
-    with (output / 'instrumentation.txt').open('wb') as stream:
+    # Stream onto the host before the Activity starts. A disconnected/crashed emulator
+    # cannot answer a post-run logcat request, but bytes already received survive.
+    with (output / 'instrumentation.txt').open('wb') as stream, (output / 'logcat-live.txt').open('wb') as live:
+        collector = subprocess.Popen(['adb', 'logcat', '-v', 'threadtime'], stdout=live,
+                                     stderr=subprocess.STDOUT)
         try:
-            result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
-                                    timeout=timeout_seconds)
-            status['runnerExitCode'] = result.returncode
-        except subprocess.TimeoutExpired:
-            status['timedOut'] = True
+            try:
+                result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
+                                        timeout=timeout_seconds)
+                status['runnerExitCode'] = result.returncode
+            except subprocess.TimeoutExpired:
+                status['timedOut'] = True
+        finally:
+            # This is our local logcat client only; do not stop the adb server or VM.
+            if collector.poll() is None:
+                collector.terminate()
+            try:
+                status['liveLogcatExitCode'] = collector.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                collector.kill()
+                status['liveLogcatExitCode'] = collector.wait(timeout=5)
     if status['timedOut']:
         try:
             process = subprocess.run(['adb', 'shell', 'pidof', 'ai.joydurm'],
