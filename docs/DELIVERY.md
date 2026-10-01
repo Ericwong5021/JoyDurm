@@ -25,7 +25,8 @@ An emulator can check
 these behaviors but cannot verify sound actually reached the user's ear or that
 the phone driver exposes Joy-Con IMU sensors.
 
-CI uses the supported `swangle` software graphics backend. The previous
+CI uses the supported `software` graphics mode, selecting the appropriate
+software backend for its emulator/host. The previous
 `swiftshader_indirect` mode is deprecated as of Emulator 36.4.9; see the
 [official Android graphics acceleration documentation](https://developer.android.com/studio/run/emulator-acceleration#accel-graphics).
 The composed-screen model visibility assertion remains mandatory and retains its
@@ -35,6 +36,11 @@ The installation artifact also retains `ordinary-3d-screen.png` and the matching
 run-ID-bearing `ordinary-3d-visibility.json`, including scene bounds, native surface
 size, viewport, entity counts and measured pixels, whether visibility passes or
 fails. These are the displayed-screen evidence, rather than a Surface-only capture.
+Device boot is limited to three minutes; the seven-test runner is limited to four
+minutes. Logcat and available XML/PNG/metrics are collected after either runner
+completion or timeout, and `runner-status.json` records the outcome. Timeout,
+nonzero exit, missing completion text or missing current-run evidence fail the
+gate; a hung renderer cannot become a pass from a leftover XML.
 
 `adb install -r` in this job is a **same-version reinstall**. It is not an upgrade
 test. CI debug keys are ephemeral between runners; upgrading an earlier APK and

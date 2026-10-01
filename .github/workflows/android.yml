@@ -143,7 +143,8 @@ jobs:
           arch: x86_64
           profile: pixel_2
           disable-animations: true
-          emulator-options: -no-window -gpu swangle -noaudio -no-boot-anim -camera-back none -no-metrics
+          emulator-boot-timeout: 180
+          emulator-options: -no-window -gpu software -noaudio -no-boot-anim -camera-back none -no-metrics
           script: |
             mkdir -p installation
             (cd dist && sha256sum --check SHA256SUMS)
@@ -151,15 +152,7 @@ jobs:
             adb install -r dist/JoyDurm-debug.apk
             adb install test-apk/app-debug-androidTest.apk
             python3 tools/verification/record_install.py --artifact-report dist/JoyDurm-debug.json --output installation/device-install.json
-            adb logcat -c
-            adb shell run-as ai.joydurm rm -f files/test-reports/smoke-tests.xml
-            rm -f installation/smoke-tests.xml
-            adb shell am instrument -w -r -e joydurmRunId "$JOYDURM_SMOKE_RUN_ID" -e listener ai.joydurm.SmokeXmlListener ai.joydurm.test/androidx.test.runner.AndroidJUnitRunner > installation/instrumentation.txt
-            adb logcat -d > installation/logcat.txt
-            adb exec-out run-as ai.joydurm cat files/test-reports/smoke-tests.xml > installation/smoke-tests.xml
-            adb exec-out run-as ai.joydurm cat files/test-reports/ordinary-3d-screen.png > installation/ordinary-3d-screen.png
-            adb exec-out run-as ai.joydurm cat files/test-reports/ordinary-3d-visibility.json > installation/ordinary-3d-visibility.json
-            python3 tools/verification/verify_instrumentation.py installation/smoke-tests.xml --run-id "$JOYDURM_SMOKE_RUN_ID"
+            python3 tools/verification/run_android_smoke.py --run-id "$JOYDURM_SMOKE_RUN_ID"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
