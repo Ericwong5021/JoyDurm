@@ -14,8 +14,10 @@ EXPECTED = {
 }
 
 
-def verify(path):
+def verify(path, run_id):
     suite = ET.parse(path).getroot()
+    if not run_id or suite.get('runId') != run_id:
+        raise ValueError('Stale or unidentified instrumentation result: run ID differs')
     cases = suite.findall('testcase')
     if {(case.get('classname'), case.get('name')) for case in cases} != EXPECTED:
         raise ValueError('Incomplete smoke/migration instrumentation result')
@@ -29,4 +31,6 @@ def verify(path):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('xml')
-    verify(parser.parse_args().xml)
+    parser.add_argument('--run-id', required=True, help='Unique ID passed to the runner as joydurmRunId')
+    args = parser.parse_args()
+    verify(args.xml, args.run_id)

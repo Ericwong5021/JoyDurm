@@ -20,6 +20,7 @@ class SmokeXmlListener : RunListener() {
         File(directory, "smoke-tests.xml").outputStream().use { stream ->
             val xml = Xml.newSerializer().apply { setOutput(stream, "UTF-8"); startDocument("UTF-8", true) }
             xml.startTag(null, "testsuite").attribute(null, "name", "JoyDurm Android smoke")
+                .attribute(null, "runId", InstrumentationRegistry.getArguments().getString("joydurmRunId") ?: "missing")
                 .attribute(null, "tests", result.runCount.toString()).attribute(null, "failures", result.failureCount.toString())
                 .attribute(null, "skipped", result.ignoreCount.toString()).attribute(null, "time", (result.runTime / 1000.0).toString())
             tests.values.forEach { test ->

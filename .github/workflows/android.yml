@@ -134,6 +134,8 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Install exact APK, permissions, lifecycle and migration
+        env:
+          JOYDURM_SMOKE_RUN_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 35
@@ -150,10 +152,12 @@ jobs:
             adb install test-apk/app-debug-androidTest.apk
             python3 tools/verification/record_install.py --artifact-report dist/JoyDurm-debug.json --output installation/device-install.json
             adb logcat -c
-            adb shell am instrument -w -r -e listener ai.joydurm.SmokeXmlListener ai.joydurm.test/androidx.test.runner.AndroidJUnitRunner > installation/instrumentation.txt
+            adb shell run-as ai.joydurm rm -f files/test-reports/smoke-tests.xml
+            rm -f installation/smoke-tests.xml
+            adb shell am instrument -w -r -e joydurmRunId "$JOYDURM_SMOKE_RUN_ID" -e listener ai.joydurm.SmokeXmlListener ai.joydurm.test/androidx.test.runner.AndroidJUnitRunner > installation/instrumentation.txt
             adb exec-out run-as ai.joydurm cat files/test-reports/smoke-tests.xml > installation/smoke-tests.xml
             adb logcat -d > installation/logcat.txt
-            python3 tools/verification/verify_instrumentation.py installation/smoke-tests.xml
+            python3 tools/verification/verify_instrumentation.py installation/smoke-tests.xml --run-id "$JOYDURM_SMOKE_RUN_ID"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

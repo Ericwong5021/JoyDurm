@@ -18,7 +18,10 @@ CI installs the prebuilt APK from the successful build job, and uses the matchin
 prebuilt test APK. Tests cover denied camera permission with continued ordinary
 3D touch input, actual composed-screen model visibility, Activity pause/resume/recreation, legacy neutral migration and
 ControllerHub restart/real UDP clock exchange. The XML gate requires every
-named test to run and pass; skipped or missing cases fail. An emulator can check
+named test to run and pass; skipped or missing cases fail. Old reports are removed
+before execution, and the XML run ID must match the unique ID passed to this
+runner invocation. A previous successful XML cannot validate an interrupted run.
+An emulator can check
 these behaviors but cannot verify sound actually reached the user's ear or that
 the phone driver exposes Joy-Con IMU sensors.
 
