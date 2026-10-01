@@ -133,10 +133,29 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - name: Prepare direct Mesa OpenGL display
+        env:
+          DISPLAY: ':99'
+          LIBGL_ALWAYS_SOFTWARE: 'true'
+          GALLIUM_DRIVER: llvmpipe
+          LP_NUM_THREADS: '1'
+        run: |
+          mkdir -p installation
+          sudo apt-get update
+          sudo apt-get install -y xvfb mesa-utils libgl1-mesa-dri
+          Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +extension RENDER -noreset > installation/xvfb.log 2>&1 &
+          for attempt in $(seq 1 20); do
+            if glxinfo -B > installation/host-opengl.txt 2>&1; then break; fi
+            sleep 1
+          done
+          grep -qi llvmpipe installation/host-opengl.txt
       - name: Install exact APK, permissions, lifecycle and migration
         env:
           JOYDURM_SMOKE_RUN_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          # Bound the Mesa software rasterizer's host workers, leaving CPU for the VM.
+          DISPLAY: ':99'
+          LIBGL_ALWAYS_SOFTWARE: 'true'
+          GALLIUM_DRIVER: llvmpipe
+          # Keep CPU limits; bypass ANGLE-over-Vulkan for the no-buffer comparison.
           LP_NUM_THREADS: '1'
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
@@ -153,9 +172,10 @@ jobs:
           ram-size: 4096M
           disable-animations: true
           emulator-boot-timeout: 180
-          # Explicit Mesa software rendering: retain real surface and display assertions.
-          # Legacy SwiftShader stalled; ANGLE completed lifecycle but rendered no kit.
-          emulator-options: -no-window -gpu lavapipe -noaudio -no-boot-anim -camera-back none -no-metrics
+          # NO_DATA with hundreds of live callbacks localizes failure before display
+          # composition. Direct Mesa OpenGL is a controlled backend comparison;
+          # all original8s/pixel/source-clock assertions remain required.
+          emulator-options: -no-window -gpu host -feature -Vulkan -noaudio -no-boot-anim -camera-back none -no-metrics
           script: |
             mkdir -p installation
             nproc > installation/host-cpu-count.txt
