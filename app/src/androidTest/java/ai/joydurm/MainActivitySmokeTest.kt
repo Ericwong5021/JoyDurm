@@ -63,6 +63,7 @@ class MainActivitySmokeTest {
         val metricsFile=File(reports,"ordinary-3d-visibility.json").apply { delete() }
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             var diagnostic="Scene has not produced a screenshot"
+            val renderProbe=RenderProbe.attach()
             var lastScreenshot: Bitmap?=null
             val metrics=JSONObject()
                 .put("runId",InstrumentationRegistry.getArguments().getString("joydurmRunId") ?: "manual")
@@ -124,8 +125,9 @@ class MainActivitySmokeTest {
                 lastScreenshot?.let { bitmap -> screenFile.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG,100,it)) } }
                 metrics.put("visible",visible).put("diagnostic",diagnostic)
                 metricsFile.writeText(metrics.toString(2))
+                renderProbe?.capture(reports,"ordinary-3d")
                 assertTrue("3D kit is not visible in the displayed scene: $diagnostic",visible)
-            } finally { lastScreenshot?.recycle() }
+            } finally { renderProbe?.close(); lastScreenshot?.recycle() }
         }
     }
 

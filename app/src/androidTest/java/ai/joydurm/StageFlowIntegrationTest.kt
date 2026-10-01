@@ -310,6 +310,7 @@ class StageFlowIntegrationTest {
         android.os.SystemClock.sleep(settleMs)
         var bitmap: Bitmap?=null
         val scenePage=page in listOf(StagePage.WELCOME,StagePage.PLACE,StagePage.SOUND_CHECK,StagePage.PLAY)
+        val renderProbe=if(scenePage && name!="play-hit")RenderProbe.attach() else null
         var lastWarm=0
         val visible=waitUntil {
             bitmap?.recycle()
@@ -327,14 +328,15 @@ class StageFlowIntegrationTest {
             lastWarm=warm
             warm>=64
         }
-        assertNotNull("No composited display screenshot for ${page.name}", bitmap)
         try {
+            assertNotNull("No composited display screenshot for ${page.name}", bitmap)
             val report = File(context.filesDir, "test-reports").apply { mkdirs() }
             val outputName=if(visible) "ui-$name.png" else "ui-failed-${page.name.lowercase(Locale.ROOT)}.png"
             File(report, outputName).outputStream().use {
                 assertTrue(bitmap!!.compress(Bitmap.CompressFormat.PNG, 100, it))
             }
-        } finally { bitmap?.recycle() }
+            renderProbe?.capture(report,"ui-${page.name.lowercase(Locale.ROOT)}")
+        } finally { renderProbe?.close(); bitmap?.recycle() }
         assertTrue("Composited kit must finish loading for ${page.name}; lastWarm=$lastWarm required=64", visible)
     }
 
