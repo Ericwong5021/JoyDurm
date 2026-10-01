@@ -40,14 +40,33 @@ class ControllerHubSocketIntegrationTest {
                         samples.put(JSONObject().put("sourceTimeNs",time).put("ax",0.0).put("ay",0.0).put("az",9.80665)
                             .put("gx",0.0).put("gy",0.0).put("gz",0.0))
                     } })
+                // Prepare and warm JSON before the source clock starts. Cold serialization is
+                // test setup, not a simulated 25 ms-old controller action.
+                val packets=listOf(motion(0,0,listOf(0,0,0)),motion(1,0,listOf(0,0,0)))
+                packets.forEach { it.toString().toByteArray(Charsets.UTF_8) }
                 val sourceRead=SystemClock.elapsedRealtimeNanos()
                 val times=(0..5).map { sourceRead-25_000_000L+it*5_000_000L }
-                source.send(motion(0,SystemClock.elapsedRealtimeNanos(),times.take(3)))
+                packets.forEachIndexed { batch,packet ->
+                    packet.put("sourceReadNs",sourceRead)
+                    repeat(3) { index -> packet.getJSONArray("samples").getJSONObject(index)
+                        .put("sourceTimeNs",times[batch*3+index]) }
+                }
+                val firstSend=SystemClock.elapsedRealtimeNanos()
+                source.send(packets[0])
                 Thread.sleep(1)
-                source.send(motion(1,SystemClock.elapsedRealtimeNanos(),times.drop(3)))
-                assertTrue("Six source-timed frames were not delivered; diagnostics=${hub.diagnostics()}",received.await(3,TimeUnit.SECONDS))
+                val secondSend=SystemClock.elapsedRealtimeNanos()
+                source.send(packets[1])
+                val allReceived=received.await(3,TimeUnit.SECONDS)
+                // Snapshot after waiting: eager Assert arguments previously captured an
+                // intermediate three-frame state instead of the actual failure state.
+                val diagnostics=hub.diagnostics()
+                val timing="firstSendAgeNs=${firstSend-sourceRead}, interBatchNs=${secondSend-firstSend}, " +
+                    "frames=${frames.map { Triple(it.sourceTimeNs,it.receivedTimeNs,it.sample.timeNs) }}"
+                assertTrue("Six source-timed frames were not delivered; $timing; diagnostics=$diagnostics",allReceived)
                 assertEquals(times,frames.map { it.sourceTimeNs })
-                assertEquals(6L,hub.diagnostics().devices.single().sampleCount)
+                assertEquals(6L,diagnostics.devices.single().sampleCount)
+                assertEquals(6L,diagnostics.bridgeStatistics!!.deliveredSamples)
+                assertEquals(0L,diagnostics.bridgeStatistics.staleSamples)
                 assertTrue(frames.zipWithNext().all { (a,b) -> a.sample.timeNs < b.sample.timeNs })
                 assertTrue(frames.all { it.clockErrorNs in 0..30_000_000L && it.session.value==session })
                 val lateRead=SystemClock.elapsedRealtimeNanos()
