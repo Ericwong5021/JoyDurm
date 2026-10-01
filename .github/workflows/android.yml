@@ -13,123 +13,257 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
+    outputs:
+      version_name: ${{ steps.identity.outputs.version_name }}
+      version_code: ${{ steps.identity.outputs.version_code }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; docs/action-pins.json
         with:
           persist-credentials: false
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           packages: platform-tools
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4; wrapper validation enabled
+      - name: Source and version gate
+        id: identity
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [ -n "$RELEASE_TAG" ]; then
+            python3 tools/verification/release_gate.py --tag "$RELEASE_TAG"
+          else
+            python3 tools/verification/release_gate.py
+          fi
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools/verification')
+          from release_gate import version_from_gradle
+          version = version_from_gradle(Path('app/build.gradle.kts').read_text())
+          print('version_name=' + version['versionName'])
+          print('version_code=' + str(version['versionCode']))
+          PY
       - name: Install SDK
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
-      - name: Verify wrapper and build
+      - name: Delivery and bridge regression gates
         run: |
+          python3 -m unittest discover -s tools/verification -v
+          python3 -m unittest discover -s tools/bridge -v
+          python3 -m unittest tools/test_glb_hierarchy.py -v
+          python3 tools/verification/verify_assets.py
+      - name: Verify dependencies and build
+        run: |
+          test -f gradle/verification-metadata.xml
           chmod +x gradlew
-          ./gradlew --no-daemon testDebugUnitTest lintDebug lintRelease assembleDebug assembleRelease
-      - name: Bridge protocol tests
-        run: python3 -m unittest discover -s tools/bridge -v
-      - name: Package installable APK
+          ./gradlew --no-daemon --dependency-verification=strict testDebugUnitTest lintDebug lintRelease assembleDebug assembleDebugAndroidTest assembleRelease
+          ./gradlew --no-daemon --dependency-verification=strict -I tools/verification/sbom.init.gradle :app:exportRuntimeSbom
+          python3 tools/verification/verify_sbom.py app/build/reports/sbom/runtime.cdx.json --source-sha "$GITHUB_SHA"
+      - name: Package exact installable APK and source evidence
         run: |
-          mkdir -p dist
+          mkdir -p dist release-input
           cp app/build/outputs/apk/debug/app-debug.apk dist/JoyDurm-debug.apk
-          (cd dist && sha256sum JoyDurm-debug.apk > SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+          python3 tools/verification/verify_assets.py --apk dist/JoyDurm-debug.apk --final-manifest dist/assets-manifest-debug.json
+          python3 tools/verification/release_gate.py --apk dist/JoyDurm-debug.apk --source-sha "$GITHUB_SHA" --aapt "$ANDROID_HOME/build-tools/35.0.0/aapt" --apksigner "$ANDROID_HOME/build-tools/35.0.0/apksigner" --output dist/JoyDurm-debug.json
+          cp app/build/reports/sbom/runtime.cdx.json dist/runtime.cdx.json
+          cp app/build/outputs/apk/release/app-release-unsigned.apk release-input/
+          python3 tools/verification/verify_assets.py --apk release-input/app-release-unsigned.apk --final-manifest dist/assets-manifest-release-unsigned.json
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          data = json.loads(Path('dist/JoyDurm-debug.json').read_text())
+          apk = Path('release-input/app-release-unsigned.apk')
+          data['unsignedApkSha256'] = hashlib.sha256(apk.read_bytes()).hexdigest()
+          Path('release-input/release-input.json').write_text(json.dumps(data, indent=2) + '\n')
+          PY
+          (cd dist && sha256sum ./*.apk ./*.json > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: JoyDurm-debug-${{ github.sha }}
           path: dist/*
           retention-days: 30
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: instrumentation-apk-${{ github.sha }}
+          path: app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: test-and-lint-reports
+          name: test-and-lint-reports-${{ github.sha }}
           path: |
             app/build/reports/tests/
+            app/build/test-results/
             app/build/reports/lint-results-debug.*
             app/build/reports/lint-results-release.*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         with:
-          name: unsigned-release
-          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          name: unsigned-release-${{ github.sha }}
+          path: release-input/*
           if-no-files-found: error
-  sign:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  instrumentation:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
+    timeout-minutes: 25
     steps:
-      # No checkout, Gradle invocation or restored build cache in the secret-bearing job.
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: JoyDurm-debug-${{ github.sha }}
+          path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: instrumentation-apk-${{ github.sha }}
+          path: test-apk
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install exact APK, permissions, lifecycle and migration
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            mkdir -p installation
+            (cd dist && sha256sum --check SHA256SUMS)
+            adb install dist/JoyDurm-debug.apk
+            adb install -r dist/JoyDurm-debug.apk
+            adb install test-apk/app-debug-androidTest.apk
+            python3 tools/verification/record_install.py --artifact-report dist/JoyDurm-debug.json --output installation/device-install.json
+            adb logcat -c
+            adb shell am instrument -w -r -e listener ai.joydurm.SmokeXmlListener ai.joydurm.test/androidx.test.runner.AndroidJUnitRunner > installation/instrumentation.txt
+            adb exec-out run-as ai.joydurm cat files/test-reports/smoke-tests.xml > installation/smoke-tests.xml
+            adb logcat -d > installation/logcat.txt
+            python3 tools/verification/verify_instrumentation.py installation/smoke-tests.xml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: installation-and-instrumentation-${{ github.sha }}
+          path: installation/
+          if-no-files-found: warn
+  sign:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, instrumentation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
+    steps:
+      # No checkout, repository script, Gradle invocation or restored build cache in this secret-bearing job.
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           packages: platform-tools
       - run: sdkmanager 'build-tools;35.0.0'
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: unsigned-release
+          name: unsigned-release-${{ github.sha }}
           path: unsigned
-      - name: Sign release if a production key is configured
+      - name: Verify source, sign with configured identity and enforce certificate
         id: signing
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          EXPECTED_CERTIFICATE: ${{ vars.RELEASE_CERT_SHA256 }}
+          EXPECTED_VERSION_NAME: ${{ needs.build.outputs.version_name }}
+          EXPECTED_VERSION_CODE: ${{ needs.build.outputs.version_code }}
+          RELEASE_TAG: ${{ github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
           if [ -z "$KEYSTORE_BASE64" ]; then
-            echo 'No production key configured; the pre-release will contain the debug APK.'
+            echo 'No production key configured. Only an explicitly labeled debug pre-release is eligible.'
+            echo 'signed=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+          python3 - <<'PY'
+          import hashlib, json, os, re
+          from pathlib import Path
+          expected = os.environ['EXPECTED_CERTIFICATE'].replace(':', '').strip().lower()
+          assert re.fullmatch('[0-9a-f]{64}', expected), 'RELEASE_CERT_SHA256 must be explicitly configured'
+          data = json.loads(Path('unsigned/release-input.json').read_text())
+          assert data['sourceSha'] == os.environ['GITHUB_SHA'], 'Wrong source commit'
+          assert data['versionName'] == os.environ['EXPECTED_VERSION_NAME']
+          assert str(data['versionCode']) == os.environ['EXPECTED_VERSION_CODE']
+          assert os.environ['RELEASE_TAG'] == 'v' + data['versionName'], 'Tag/version mismatch'
+          assert hashlib.sha256(Path('unsigned/app-release-unsigned.apk').read_bytes()).hexdigest() == data['unsignedApkSha256'], 'Unsigned APK changed'
+          PY
           trap 'rm -f "$RUNNER_TEMP/release.jks"' EXIT
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
           mkdir -p signed
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
-            --ks "$RUNNER_TEMP/release.jks" --ks-key-alias "$KEY_ALIAS" \
-            --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD \
-            --out signed/JoyDurm-release.apk unsigned/app-release-unsigned.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose signed/JoyDurm-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$RUNNER_TEMP/release.jks" --ks-key-alias "$KEY_ALIAS" --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD --out signed/JoyDurm-release.apk unsigned/app-release-unsigned.apk
+          python3 - <<'PY'
+          import hashlib, json, os, re, subprocess
+          from pathlib import Path
+          apk = Path('signed/JoyDurm-release.apk')
+          tools = Path(os.environ['ANDROID_HOME']) / 'build-tools/35.0.0'
+          output = subprocess.check_output([str(tools / 'apksigner'), 'verify', '--verbose', '--print-certs', str(apk)], text=True)
+          digests = re.findall(r'^Signer #\d+ certificate SHA-256 digest:\s*([0-9a-fA-F:]+)\s*$', output, re.M)
+          expected = os.environ['EXPECTED_CERTIFICATE'].replace(':', '').strip().lower()
+          assert len(digests) == 1 and digests[0].replace(':', '').lower() == expected, 'Unexpected signing identity'
+          badging = subprocess.check_output([str(tools / 'aapt'), 'dump', 'badging', str(apk)], text=True)
+          identity = re.search(r"^package: name='([^']+)' versionCode='(\d+)' versionName='([^']+)'", badging, re.M)
+          assert identity and identity[1] == 'ai.joydurm' and identity[2] == os.environ['EXPECTED_VERSION_CODE'] and identity[3] == os.environ['EXPECTED_VERSION_NAME']
+          data = dict(sourceSha=os.environ['GITHUB_SHA'], apk=apk.name, apkSha256=hashlib.sha256(apk.read_bytes()).hexdigest(), certificateSha256=expected, versionCode=int(identity[2]), versionName=identity[3], applicationId=identity[1], evidenceScope='Signing identity checked; signed APK device upgrade remains pending')
+          Path('signed/JoyDurm-release.json').write_text(json.dumps(data, indent=2) + '\n')
+          PY
           echo 'signed=true' >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.signing.outputs.signed == 'true'
         with:
-          name: JoyDurm-signed-release
-          path: signed/JoyDurm-release.apk
+          name: JoyDurm-signed-release-${{ github.sha }}
+          path: signed/*
           if-no-files-found: error
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, sign]
+    needs: [build, instrumentation, sign]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      # Only artifacts from this successful tag run are eligible for publication.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: JoyDurm-*
+          name: JoyDurm-debug-${{ github.sha }}
           path: dist
-          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.sign.outputs.signed == 'true'
+        with:
+          name: JoyDurm-signed-release-${{ github.sha }}
+          path: dist
       - name: Checksum release assets
-        run: cd dist && sha256sum ./*.apk > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+        run: cd dist && sha256sum ./*.apk ./*.json > SHA256SUMS
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           prerelease: true
           generate_release_notes: true
           fail_on_unmatched_files: true
+          body: 'Build, emulator installation and smoke checks passed for this source SHA. Debug APKs use an ephemeral CI key; version upgrade, real four-controller AR and acoustic latency remain pending. See the attached identity reports.'
           files: |
             dist/*.apk
+            dist/*.json
             dist/SHA256SUMS

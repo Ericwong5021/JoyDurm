@@ -1,0 +1,14 @@
+{
+  "repository": "SceneView/sceneview",
+  "tag": "v2.3.0",
+  "sourceCommit": "cac3d95410cdacb577de199543a5a3c78c046d38",
+  "licenseSource": "https://github.com/SceneView/sceneview/blob/cac3d95410cdacb577de199543a5a3c78c046d38/LICENSE",
+  "licenseSha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "relatedSourcePaths": [
+    "LICENSE",
+    "arsceneview/src/main/assets/textures/plane_renderer.png",
+    "sceneview/src/main/assets/environments/neutral/neutral_ibl.ktx",
+    "sceneview/src/main/assets/environments/neutral/neutral_skybox.ktx",
+    "sceneview/src/main/assets/environments/neutral/sh.txt"
+  ]
+}

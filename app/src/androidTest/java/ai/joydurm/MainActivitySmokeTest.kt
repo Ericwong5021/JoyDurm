@@ -1,0 +1,120 @@
+package ai.joydurm
+
+import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Context
+import android.content.pm.PackageManager
+import android.view.View
+import android.view.ViewGroup
+import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Button
+import android.widget.TextView
+import androidx.lifecycle.Lifecycle
+import androidx.test.core.app.ActivityScenario
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import ai.joydurm.ui.MainActivity
+import org.junit.Assert.*
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/** Emulator smoke coverage; it does not measure audible latency, controllers or AR tracking. */
+@RunWith(AndroidJUnit4::class)
+class MainActivitySmokeTest {
+    private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
+    private val context get() = instrumentation.targetContext
+
+    @Before fun prepare() {
+        context.getSharedPreferences("joydurm", Context.MODE_PRIVATE).edit()
+            .putBoolean("onboarded", true).putBoolean("bridge", false).commit()
+        instrumentation.uiAutomation.revokeRuntimePermission(context.packageName, Manifest.permission.CAMERA)
+        instrumentation.uiAutomation.serviceInfo = instrumentation.uiAutomation.serviceInfo.apply {
+            flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+        }
+        instrumentation.uiAutomation.executeShellCommand("pm clear-permission-flags ${context.packageName} android.permission.CAMERA user-set user-fixed")
+            .use { descriptor -> android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { it.readBytes() } }
+        instrumentation.waitForIdleSync()
+    }
+
+    @Test fun launchWithoutCameraPermissionAndTouchPadRemainsPlayable() {
+        assertEquals(PackageManager.PERMISSION_DENIED, context.checkSelfPermission(Manifest.permission.CAMERA))
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            click(scenario, "军鼓")
+            awaitText(scenario, "军鼓 · 力度")
+            scenario.onActivity { activity ->
+                assertTrue(activity.window.decorView.isShown)
+                assertEquals(PackageManager.PERMISSION_DENIED, activity.checkSelfPermission(Manifest.permission.CAMERA))
+            }
+        }
+    }
+
+    @Test fun deniedArCameraPermissionKeepsOrdinary3DAndTouchPadsAvailable() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            click(scenario, "AR 相机")
+            val denied = waitUntil {
+                val root = instrumentation.uiAutomation.rootInActiveWindow ?: return@waitUntil false
+                val button = accessibilityNodes(root).firstOrNull {
+                    it.viewIdResourceName?.endsWith("/permission_deny_button") == true
+                }
+                button?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+            }
+            assertTrue("Android permission dialog did not expose the deny action", denied)
+            awaitText(scenario, "摄像头权限未授予")
+            click(scenario, "军鼓")
+            awaitText(scenario, "军鼓 · 力度")
+        }
+    }
+
+    @Test fun pauseResumeAndRecreationRetainSettingsAndInputUi() {
+        context.getSharedPreferences("joydurm", Context.MODE_PRIVATE).edit().putInt("bpm", 123).commit()
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            repeat(3) {
+                scenario.moveToState(Lifecycle.State.CREATED)
+                assertEquals(Lifecycle.State.CREATED, scenario.state)
+                scenario.moveToState(Lifecycle.State.RESUMED)
+                assertEquals(Lifecycle.State.RESUMED, scenario.state)
+                click(scenario, "军鼓")
+                awaitText(scenario, "军鼓 · 力度")
+            }
+            scenario.recreate()
+            assertEquals(Lifecycle.State.RESUMED, scenario.state)
+            assertEquals(123, context.getSharedPreferences("joydurm", Context.MODE_PRIVATE).getInt("bpm", 0))
+            click(scenario, "军鼓")
+            awaitText(scenario, "军鼓 · 力度")
+        }
+    }
+
+    private fun click(scenario: ActivityScenario<MainActivity>, label: String) {
+        instrumentation.waitForIdleSync()
+        scenario.onActivity { activity ->
+            val button = views(activity.window.decorView).filterIsInstance<Button>().firstOrNull { it.text.toString() == label }
+            assertNotNull("Missing UI button: $label", button)
+            assertTrue(button!!.performClick())
+        }
+    }
+
+    private fun awaitText(scenario: ActivityScenario<MainActivity>, text: String) {
+        assertTrue("Expected visible status: $text", waitUntil {
+            var found = false
+            scenario.onActivity { activity -> found = views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.contains(text) } }
+            found
+        })
+    }
+
+    private fun waitUntil(predicate: () -> Boolean): Boolean {
+        val deadline = android.os.SystemClock.elapsedRealtime() + 8_000
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            if (predicate()) return true
+            Thread.sleep(50)
+        }
+        return false
+    }
+
+    private fun views(view: View): List<View> = listOf(view) + if (view is ViewGroup) {
+        (0 until view.childCount).flatMap { views(view.getChildAt(it)) }
+    } else emptyList()
+
+    private fun accessibilityNodes(node: AccessibilityNodeInfo): List<AccessibilityNodeInfo> = listOf(node) +
+        (0 until node.childCount).mapNotNull { node.getChild(it) }.flatMap(::accessibilityNodes)
+}

@@ -1,0 +1,13 @@
+{
+  "artifacts": [
+    {
+      "artifact": "aapt2-8.9.1-12782657-linux.jar",
+      "source": "https://dl.google.com/android/maven2/com/android/tools/build/aapt2/8.9.1-12782657/aapt2-8.9.1-12782657-linux.jar",
+      "checkedOn": "2026-10-01T06:10:33.099224+00:00",
+      "bytes": 2315715,
+      "sha256": "8cedaf4d9166beac9074d96eda54792158507f9e7aa65b0e4daa0e86aa511ded",
+      "upstreamSha1": "e662d64ca568062a339e8f701680ab9e8539562d",
+      "trustScope": "Initial checksum trust from Google official Maven over HTTPS; checked against published SHA1. This is integrity evidence, not vulnerability assessment."
+    }
+  ]
+}

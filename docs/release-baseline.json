@@ -1,0 +1,7 @@
+{
+  "sourceSha": "279039a268ae885d744010e6f9fff400aeba633c",
+  "versionName": "0.1.1",
+  "versionCode": 2,
+  "status": "Reviewed source version; production release and stable signing identity not established",
+  "maintenance": "After a verified release, update this baseline to its commit, version and certificate identity. Never infer upgrade success from this file."
+}
