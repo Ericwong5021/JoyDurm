@@ -4,6 +4,7 @@ import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
@@ -14,6 +15,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import ai.joydurm.ui.MainActivity
+import io.github.sceneview.SceneView
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -46,6 +48,50 @@ class MainActivitySmokeTest {
                 assertTrue(activity.window.decorView.isShown)
                 assertEquals(PackageManager.PERMISSION_DENIED, activity.checkSelfPermission(Manifest.permission.CAMERA))
             }
+        }
+    }
+
+    @Test fun ordinary3DKitIsVisibleInCompositedScreen() {
+        // Use the authored kit, independently of layouts or imports saved by other tests.
+        context.getSharedPreferences("joydurm",Context.MODE_PRIVATE).edit()
+            .remove("layout").remove("customModel").remove("modelPath").commit()
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            var diagnostic="Scene has not produced a screenshot"
+            val visible=waitUntil {
+                var bounds: Rect?=null
+                scenario.onActivity { activity ->
+                    val scene=views(activity.window.decorView).filterIsInstance<SceneView>().singleOrNull()
+                    if(scene!=null && scene.isShown && scene.width>0 && scene.height>0) {
+                        val location=IntArray(2); scene.getLocationOnScreen(location)
+                        val inset=minOf(scene.width,scene.height)/20
+                        bounds=Rect(location[0]+inset,location[1]+inset,
+                            location[0]+scene.width-inset,location[1]+scene.height-inset)
+                        diagnostic="scene=$bounds viewport=${scene.view.viewport.width}x${scene.view.viewport.height}"
+                    }
+                }
+                val region=bounds ?: return@waitUntil false
+                // A Surface-only PixelCopy can see geometry hidden behind an opaque View background.
+                // UiAutomation captures the actual composed display, matching what the user sees.
+                val bitmap=instrumentation.uiAutomation.takeScreenshot() ?: return@waitUntil false
+                try {
+                    if(!region.intersect(0,0,bitmap.width,bitmap.height) || region.isEmpty) return@waitUntil false
+                    val pixels=IntArray(region.width()*region.height())
+                    bitmap.getPixels(pixels,0,region.width(),region.left,region.top,region.width(),region.height())
+                    var warm=0; var sampled=0
+                    for(y in 0 until region.height() step 2) for(x in 0 until region.width() step 2) {
+                        val pixel=pixels[y*region.width()+x]
+                        val r=(pixel shr 16) and 255; val g=(pixel shr 8) and 255; val b=pixel and 255
+                        // The built-in coral shells and brass cymbals are warm; the empty dark
+                        // viewport and all surrounding gray/white UI cannot satisfy this mask.
+                        if(r>=60 && g>=30 && r>=b+25 && g>=b+8 && r>g)warm++
+                        sampled++
+                    }
+                    val required=maxOf(64,sampled/1000)
+                    diagnostic+=" warmModelPixels=$warm required=$required sampled=$sampled"
+                    warm>=required
+                } finally { bitmap.recycle() }
+            }
+            assertTrue("3D kit is not visible in the displayed scene: $diagnostic",visible)
         }
     }
 

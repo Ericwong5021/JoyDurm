@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 EXPECTED = {
     ('ai.joydurm.ControllerHubSocketIntegrationTest', 'twoBurstedBatchesDeliverAllSixSourceFramesAndDelayedMotionIsRejected'),
     ('ai.joydurm.MainActivitySmokeTest', 'launchWithoutCameraPermissionAndTouchPadRemainsPlayable'),
+    ('ai.joydurm.MainActivitySmokeTest', 'ordinary3DKitIsVisibleInCompositedScreen'),
     ('ai.joydurm.MainActivitySmokeTest', 'deniedArCameraPermissionKeepsOrdinary3DAndTouchPadsAvailable'),
     ('ai.joydurm.MainActivitySmokeTest', 'pauseResumeAndRecreationRetainSettingsAndInputUi'),
     ('ai.joydurm.SettingsNeutralMigrationTest', 'legacyNonzeroNeutralIsDiscardedAndNewSaveHasNoSessionOrigin'),

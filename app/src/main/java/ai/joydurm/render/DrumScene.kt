@@ -62,7 +62,9 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
     var placed=!ar; private set
     private var lastTracking: TrackingState?=null
     init {
-        view.setBackgroundColor(Color.rgb(16,21,31))
+        // An Android background draws over SurfaceView's hole and hides the Filament surface.
+        // Color the existing 3D skybox instead; AR keeps its camera background untouched.
+        if(!ar) view.skybox?.setColor(16f/255f,21f/255f,31f/255f,1f)
         if(ar) {
             (view as ARSceneView).apply {
                 configureSession { _,config ->
