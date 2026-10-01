@@ -144,6 +144,9 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_2
+          # Match the 37.1.11 build used by the accepted local run; avoid SDK drift.
+          # Official archive: emulator-linux_x64-15917651.zip (Google repository).
+          emulator-build: 15917651
           # Software rendering shares CPU with API35/permission-controller work.
           # Keep the original deadlines and pixels; provide explicit VM capacity.
           cores: 2
