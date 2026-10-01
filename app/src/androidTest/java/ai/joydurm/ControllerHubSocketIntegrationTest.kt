@@ -42,20 +42,15 @@ class ControllerHubSocketIntegrationTest {
                     } })
                 // Prepare and warm JSON before the source clock starts. Cold serialization is
                 // test setup, not a simulated 25 ms-old controller action.
-                val packets=listOf(motion(0,0,listOf(0,0,0)),motion(1,0,listOf(0,0,0)))
-                packets.forEach { it.toString().toByteArray(Charsets.UTF_8) }
+                val packets=listOf(PreparedMotionPacket(motion(0,0,listOf(0,0,0))),PreparedMotionPacket(motion(1,0,listOf(0,0,0))))
+                val offsets=listOf(longArrayOf(-25_000_000,-20_000_000,-15_000_000),longArrayOf(-10_000_000,-5_000_000,0))
                 val sourceRead=SystemClock.elapsedRealtimeNanos()
-                val times=(0..5).map { sourceRead-25_000_000L+it*5_000_000L }
-                packets.forEachIndexed { batch,packet ->
-                    packet.put("sourceReadNs",sourceRead)
-                    repeat(3) { index -> packet.getJSONArray("samples").getJSONObject(index)
-                        .put("sourceTimeNs",times[batch*3+index]) }
-                }
                 val firstSend=SystemClock.elapsedRealtimeNanos()
-                source.send(packets[0])
+                source.send(packets[0].stamp(sourceRead,offsets[0]))
                 Thread.sleep(1)
                 val secondSend=SystemClock.elapsedRealtimeNanos()
-                source.send(packets[1])
+                source.send(packets[1].stamp(sourceRead,offsets[1]))
+                val times=(0..5).map { sourceRead-25_000_000L+it*5_000_000L }
                 val allReceived=received.await(3,TimeUnit.SECONDS)
                 // Snapshot after waiting: eager Assert arguments previously captured an
                 // intermediate three-frame state instead of the actual failure state.

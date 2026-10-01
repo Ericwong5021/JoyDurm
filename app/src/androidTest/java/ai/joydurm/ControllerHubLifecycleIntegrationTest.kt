@@ -39,18 +39,21 @@ class ControllerHubLifecycleIntegrationTest {
             UdpClockTestSource(hub, port, token).use { source ->
                 source.awaitVerifiedClock()
                 assertEquals(0, samples.get())
-                val sourceRead = SystemClock.elapsedRealtimeNanos()
                 val frames = JSONArray()
                 repeat(3) { index ->
-                    frames.put(JSONObject().put("sourceTimeNs", sourceRead - (2 - index) * 5_000_000L)
+                    frames.put(JSONObject().put("sourceTimeNs", 0L)
                         .put("ax", 0.0).put("ay", 0.0).put("az", 9.80665)
                         .put("gx", 0.0).put("gy", 0.0).put("gz", 0.0))
                 }
-                source.send(JSONObject().put("v", 2).put("type", "motion").put("token", token)
+                val packet=PreparedMotionPacket(JSONObject().put("v", 2).put("type", "motion").put("token", token)
                     .put("device", "instrumentation-simulator").put("sessionId", UUID.randomUUID().toString())
                     .put("identityStable", false).put("identitySource", "simulator")
-                    .put("seq", 0L).put("timer", 1).put("sourceReadNs", sourceRead).put("samples", frames))
-                assertTrue("Three source-timed UDP samples were not delivered", received.await(3, TimeUnit.SECONDS))
+                    .put("seq", 0L).put("timer", 1).put("sourceReadNs", 0L).put("samples", frames))
+                val offsets=longArrayOf(-10_000_000,-5_000_000,0)
+                val sourceRead = SystemClock.elapsedRealtimeNanos()
+                source.send(packet.stamp(sourceRead,offsets))
+                val allReceived=received.await(3, TimeUnit.SECONDS)
+                assertTrue("Three source-timed UDP samples were not delivered; diagnostics=${hub.diagnostics()}", allReceived)
                 assertEquals(3, samples.get())
                 assertEquals("HARDWARE_PENDING", JSONObject(hub.capabilityReport()).getString("status"))
             }

@@ -51,8 +51,11 @@ internal class UdpClockTestSource(private val hub: ControllerHub, private val po
     }
 
     fun send(json: JSONObject) {
+        send(json.toString().toByteArray(Charsets.UTF_8))
+    }
+
+    fun send(bytes: ByteArray) {
         checkHealthy()
-        val bytes=json.toString().toByteArray(Charsets.UTF_8)
         socket.send(DatagramPacket(bytes,bytes.size,InetAddress.getLoopbackAddress(),port))
     }
 

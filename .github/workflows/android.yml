@@ -136,6 +136,8 @@ jobs:
       - name: Install exact APK, permissions, lifecycle and migration
         env:
           JOYDURM_SMOKE_RUN_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # Bound the Mesa software rasterizer's host workers, leaving CPU for the VM.
+          LP_NUM_THREADS: '1'
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 35
@@ -144,7 +146,7 @@ jobs:
           profile: pixel_2
           # Software rendering shares CPU with API35/permission-controller work.
           # Keep the original deadlines and pixels; provide explicit VM capacity.
-          cores: 4
+          cores: 2
           ram-size: 4096M
           disable-animations: true
           emulator-boot-timeout: 180
@@ -153,6 +155,8 @@ jobs:
           emulator-options: -no-window -gpu lavapipe -noaudio -no-boot-anim -camera-back none -no-metrics
           script: |
             mkdir -p installation
+            nproc > installation/host-cpu-count.txt
+            ps -eLo pid,tid,comm > installation/host-threads.txt
             (cd dist && sha256sum --check SHA256SUMS)
             adb install dist/JoyDurm-debug.apk
             adb install -r dist/JoyDurm-debug.apk
