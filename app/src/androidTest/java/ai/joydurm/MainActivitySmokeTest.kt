@@ -4,6 +4,7 @@ import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
@@ -20,6 +21,8 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.json.JSONObject
+import java.io.File
 
 /** Emulator smoke coverage; it does not measure audible latency, controllers or AR tracking. */
 @RunWith(AndroidJUnit4::class)
@@ -55,43 +58,70 @@ class MainActivitySmokeTest {
         // Use the authored kit, independently of layouts or imports saved by other tests.
         context.getSharedPreferences("joydurm",Context.MODE_PRIVATE).edit()
             .remove("layout").remove("customModel").remove("modelPath").commit()
+        val reports=File(context.filesDir,"test-reports").apply { mkdirs() }
+        val screenFile=File(reports,"ordinary-3d-screen.png").apply { delete() }
+        val metricsFile=File(reports,"ordinary-3d-visibility.json").apply { delete() }
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             var diagnostic="Scene has not produced a screenshot"
-            val visible=waitUntil {
-                var bounds: Rect?=null
-                scenario.onActivity { activity ->
-                    val scene=views(activity.window.decorView).filterIsInstance<SceneView>().singleOrNull()
-                    if(scene!=null && scene.isShown && scene.width>0 && scene.height>0) {
-                        val location=IntArray(2); scene.getLocationOnScreen(location)
-                        val inset=minOf(scene.width,scene.height)/20
-                        bounds=Rect(location[0]+inset,location[1]+inset,
-                            location[0]+scene.width-inset,location[1]+scene.height-inset)
-                        diagnostic="scene=$bounds viewport=${scene.view.viewport.width}x${scene.view.viewport.height}"
+            var lastScreenshot: Bitmap?=null
+            val metrics=JSONObject()
+                .put("runId",InstrumentationRegistry.getArguments().getString("joydurmRunId") ?: "manual")
+                .put("test","ordinary3DKitIsVisibleInCompositedScreen")
+                .put("abi",android.os.Build.SUPPORTED_ABIS.firstOrNull())
+                .put("api",android.os.Build.VERSION.SDK_INT)
+            try {
+                val visible=waitUntil {
+                    var bounds: Rect?=null
+                    scenario.onActivity { activity ->
+                        val scene=views(activity.window.decorView).filterIsInstance<SceneView>().singleOrNull()
+                        if(scene!=null && scene.isShown && scene.width>0 && scene.height>0) {
+                            val location=IntArray(2); scene.getLocationOnScreen(location)
+                            val inset=minOf(scene.width,scene.height)/20
+                            bounds=Rect(location[0]+inset,location[1]+inset,
+                                location[0]+scene.width-inset,location[1]+scene.height-inset)
+                            diagnostic="scene=$bounds viewport=${scene.view.viewport.width}x${scene.view.viewport.height}"
+                            metrics.put("sceneBounds",bounds.toString())
+                                .put("viewportWidth",scene.view.viewport.width).put("viewportHeight",scene.view.viewport.height)
+                                .put("surfaceFrame",scene.holder.surfaceFrame.toString())
+                                .put("surfaceValid",scene.holder.surface.isValid).put("readyToRender",scene.uiHelper.isReadyToRender)
+                                .put("renderables",scene.scene.renderableCount).put("lights",scene.scene.lightCount)
+                                .put("dynamicResolution",scene.view.dynamicResolutionOptions.enabled)
+                                .put("hdrColorBuffer",scene.view.renderQuality.hdrColorBuffer.toString())
+                        }
                     }
-                }
-                val region=bounds ?: return@waitUntil false
-                // A Surface-only PixelCopy can see geometry hidden behind an opaque View background.
-                // UiAutomation captures the actual composed display, matching what the user sees.
-                val bitmap=instrumentation.uiAutomation.takeScreenshot() ?: return@waitUntil false
-                try {
+                    val region=bounds ?: return@waitUntil false
+                    // A Surface-only PixelCopy can see geometry hidden behind an opaque View background.
+                    // UiAutomation captures the actual composed display, matching what the user sees.
+                    val bitmap=instrumentation.uiAutomation.takeScreenshot() ?: return@waitUntil false
+                    lastScreenshot?.recycle(); lastScreenshot=bitmap
                     if(!region.intersect(0,0,bitmap.width,bitmap.height) || region.isEmpty) return@waitUntil false
                     val pixels=IntArray(region.width()*region.height())
                     bitmap.getPixels(pixels,0,region.width(),region.left,region.top,region.width(),region.height())
                     var warm=0; var sampled=0
+                    var sumR=0L; var sumG=0L; var sumB=0L; var brightest=0
                     for(y in 0 until region.height() step 2) for(x in 0 until region.width() step 2) {
                         val pixel=pixels[y*region.width()+x]
                         val r=(pixel shr 16) and 255; val g=(pixel shr 8) and 255; val b=pixel and 255
                         // The built-in coral shells and brass cymbals are warm; the empty dark
                         // viewport and all surrounding gray/white UI cannot satisfy this mask.
                         if(r>=60 && g>=30 && r>=b+25 && g>=b+8 && r>g)warm++
+                        sumR+=r; sumG+=g; sumB+=b; brightest=maxOf(brightest,r,g,b)
                         sampled++
                     }
                     val required=maxOf(64,sampled/1000)
                     diagnostic+=" warmModelPixels=$warm required=$required sampled=$sampled"
+                    metrics.put("screenshotWidth",bitmap.width).put("screenshotHeight",bitmap.height)
+                        .put("sampleBounds",region.toString()).put("warmModelPixels",warm)
+                        .put("required",required).put("sampled",sampled).put("brightestChannel",brightest)
+                        .put("meanR",sumR.toDouble()/sampled).put("meanG",sumG.toDouble()/sampled).put("meanB",sumB.toDouble()/sampled)
                     warm>=required
-                } finally { bitmap.recycle() }
-            }
-            assertTrue("3D kit is not visible in the displayed scene: $diagnostic",visible)
+                }
+                // Export the final actual display on either outcome, before the Activity closes.
+                lastScreenshot?.let { bitmap -> screenFile.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG,100,it)) } }
+                metrics.put("visible",visible).put("diagnostic",diagnostic)
+                metricsFile.writeText(metrics.toString(2))
+                assertTrue("3D kit is not visible in the displayed scene: $diagnostic",visible)
+            } finally { lastScreenshot?.recycle() }
         }
     }
 

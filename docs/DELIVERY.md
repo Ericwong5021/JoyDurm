@@ -25,6 +25,17 @@ An emulator can check
 these behaviors but cannot verify sound actually reached the user's ear or that
 the phone driver exposes Joy-Con IMU sensors.
 
+CI uses the supported `swangle` software graphics backend. The previous
+`swiftshader_indirect` mode is deprecated as of Emulator 36.4.9; see the
+[official Android graphics acceleration documentation](https://developer.android.com/studio/run/emulator-acceleration#accel-graphics).
+The composed-screen model visibility assertion remains mandatory and retains its
+original pixel threshold. A passing test on the local arm64 emulator is not
+substituted for this Linux x86_64 CI result.
+The installation artifact also retains `ordinary-3d-screen.png` and the matching
+run-ID-bearing `ordinary-3d-visibility.json`, including scene bounds, native surface
+size, viewport, entity counts and measured pixels, whether visibility passes or
+fails. These are the displayed-screen evidence, rather than a Surface-only capture.
+
 `adb install -r` in this job is a **same-version reinstall**. It is not an upgrade
 test. CI debug keys are ephemeral between runners; upgrading an earlier APK and
 retaining user data remains pending until a previous version and stable signing
