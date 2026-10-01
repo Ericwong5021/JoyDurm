@@ -142,6 +142,10 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_2
+          # Software rendering shares CPU with API35/permission-controller work.
+          # Keep the original deadlines and pixels; provide explicit VM capacity.
+          cores: 4
+          ram-size: 4096M
           disable-animations: true
           emulator-boot-timeout: 180
           # Explicit Mesa software rendering: retain real surface and display assertions.

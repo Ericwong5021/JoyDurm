@@ -49,7 +49,8 @@ class SmokeXmlListener : RunListener() {
         // This runs after the same assertions and XML writer, before runner teardown.
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val runId = InstrumentationRegistry.getArguments().getString("joydurmRunId") ?: "missing"
-        listOf("smoke-tests.xml", "ordinary-3d-screen.png", "ordinary-3d-visibility.json", "thread-stalls.txt").forEach { name ->
+        listOf("smoke-tests.xml", "ordinary-3d-screen.png", "ordinary-3d-visibility.json", "thread-stalls.txt",
+            "ui-failed-play.png", "ui-failed-welcome.png", "ui-failed-place.png", "ui-failed-sound_check.png").forEach { name ->
             val file = File(directory, name)
             if (file.isFile && file.length() in 1..8_388_608L) {
                 val bytes = file.readBytes()

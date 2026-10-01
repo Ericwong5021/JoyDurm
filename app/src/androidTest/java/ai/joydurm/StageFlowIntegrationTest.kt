@@ -310,7 +310,8 @@ class StageFlowIntegrationTest {
         android.os.SystemClock.sleep(settleMs)
         var bitmap: Bitmap?=null
         val scenePage=page in listOf(StagePage.WELCOME,StagePage.PLACE,StagePage.SOUND_CHECK,StagePage.PLAY)
-        assertTrue("Composited kit must finish loading for ${page.name}", waitUntil {
+        var lastWarm=0
+        val visible=waitUntil {
             bitmap?.recycle()
             bitmap=instrumentation.uiAutomation.takeScreenshot()
             val frame=bitmap ?: return@waitUntil false
@@ -323,15 +324,18 @@ class StageFlowIntegrationTest {
                     val r=(p shr 16) and 255; val g=(p shr 8) and 255; val b=p and 255
                     if(r>=60 && g>=30 && r>=b+25 && g>=b+8 && r>g)warm++
                 }
+            lastWarm=warm
             warm>=64
-        })
+        }
         assertNotNull("No composited display screenshot for ${page.name}", bitmap)
         try {
             val report = File(context.filesDir, "test-reports").apply { mkdirs() }
-            File(report, "ui-$name.png").outputStream().use {
+            val outputName=if(visible) "ui-$name.png" else "ui-failed-${page.name.lowercase(Locale.ROOT)}.png"
+            File(report, outputName).outputStream().use {
                 assertTrue(bitmap!!.compress(Bitmap.CompressFormat.PNG, 100, it))
             }
         } finally { bitmap?.recycle() }
+        assertTrue("Composited kit must finish loading for ${page.name}; lastWarm=$lastWarm required=64", visible)
     }
 
     private fun waitUntil(predicate: () -> Boolean): Boolean {
