@@ -149,6 +149,27 @@ class BridgePacketDecoder(private val token: String) {
         return BridgeDecodeResult(batches=batches)
     }
 
+    /** Owner dispatches after encoding, so bootstrap arrival/queue time is never t1. */
+    fun dispatchSync(request: BridgeSyncRequest, readSendTimeNs: ()->Long, send: (ByteArray)->Unit): Boolean {
+        val clock=clocks[request.endpoint] ?: return false
+        val json=JSONObject(request.json)
+        if(clock.nonce==null || json.getString("nonce")!=clock.nonce)return false
+        val prefix="\"clientSendNs\":"
+        val bytes=json.put("clientSendNs",Long.MAX_VALUE).toString().toByteArray(Charsets.UTF_8)
+        val position=String(bytes,Charsets.US_ASCII).indexOf(prefix+Long.MAX_VALUE)+prefix.length
+        check(position>=prefix.length)
+        // All allocation/JSON work precedes the real send clock. Fixed-width JSON
+        // numbers permit leading spaces, so stamping does not serialize again.
+        val sent=readSendTimeNs()
+        require(sent>=clock.clientSendNs && sent>=0)
+        bytes.fill(' '.code.toByte(),position,position+19)
+        var remaining=sent; var cursor=position+18
+        do { bytes[cursor--]=('0'.code+(remaining%10).toInt()).toByte(); remaining/=10 } while(remaining>0)
+        clock.clientSendNs=sent; clock.requestedAtNs=sent
+        send(bytes)
+        return true
+    }
+
     private fun requestSync(endpoint: String, clock: Clock, nowNs: Long): BridgeSyncRequest? {
         val elapsed = if (clock.requestedAtNs == Long.MIN_VALUE) Long.MAX_VALUE else nowNs - clock.requestedAtNs
         if (elapsed < if (clock.nonce == null) SYNC_INTERVAL_NS else SYNC_RETRY_NS) return null

@@ -255,8 +255,11 @@ class ControllerHub(private val context: Context, private val sample: (ImuSample
     private fun handleBridge(result: BridgeDecodeResult) {
         result.syncRequests.forEach { request ->
             endpoints[request.endpoint]?.let { (address,port) ->
-                val bytes = request.json.toByteArray(Charsets.UTF_8)
-                runCatching { udp?.send(DatagramPacket(bytes,bytes.size,address,port)) }
+                runCatching {
+                    decoder?.dispatchSync(request,SystemClock::elapsedRealtimeNanos) { bytes ->
+                        udp?.send(DatagramPacket(bytes,bytes.size,address,port))
+                    }
+                }
             }
         }
         result.lostDevices.forEach { lose(it,"桥接会话已变化，请重新归中",remove=true) }

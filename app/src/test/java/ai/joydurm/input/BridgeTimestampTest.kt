@@ -68,6 +68,29 @@ class BridgeTimestampTest {
         assertTrue(d.statistics().lastRejection!!.contains("30 ms"))
         assertTrue(d.receive(motion(1,listOf(BASE+OFFSET)),ENDPOINT,BASE+32_000_000L).batches.isEmpty())
     }
+    @Test fun delayedSyncDispatchUsesActualSendClockAndKeepsStaleActionsRejected() {
+        val d=BridgePacketDecoder(TOKEN)
+        val request=d.receive(motion(0,listOf(BASE+OFFSET)),ENDPOINT,BASE).syncRequests.single()
+        val sent=BASE+150_000_000L // input queue/encoding cost, before network transmission
+        var dispatched: ByteArray?=null
+        assertTrue(d.dispatchSync(request,{ sent }) { dispatched=it })
+        val wire=String(dispatched!!,Charsets.UTF_8)
+        assertEquals(sent,JSONObject(wire).getLong("clientSendNs"))
+        // An echo of the bootstrap-arrival timestamp cannot authenticate the new exchange.
+        d.receive(syncReply(request.json),ENDPOINT,sent+1_000_000L)
+        assertEquals(0L,d.statistics().acceptedClockExchanges)
+        d.receive(syncReply(wire),ENDPOINT,sent+2_000_000L)
+        assertEquals(1L,d.statistics().acceptedClockExchanges)
+        assertEquals(1,d.statistics(sent+2_000_000L).synchronizedClockCount)
+        val source=sent+OFFSET+3_000_000L
+        d.receive(motion(1,listOf(source)),ENDPOINT,sent+4_000_000L)
+        val frame=d.poll(sent+25_000_000L).batches.single().frames.single()
+        assertEquals(source,frame.sourceTimeNs)
+        assertEquals(sent+3_000_000L-200L,frame.sample.timeNs)
+        d.receive(motion(2,listOf(source-500_000_000L)),ENDPOINT,sent+26_000_000L)
+        assertTrue(d.poll(sent+50_000_000L).batches.isEmpty())
+        assertEquals(1L,d.statistics().staleSamples)
+    }
     @Test fun invalidRangesMalformedAndOversizedPayloadsAreRejected() {
         val d=BridgePacketDecoder(TOKEN); synchronize(d)
         val j=JSONObject(String(motion(0,listOf(BASE+OFFSET))))
