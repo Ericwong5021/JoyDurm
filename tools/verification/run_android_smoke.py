@@ -22,6 +22,10 @@ def run_smoke(output, run_id, timeout_seconds=240):
                     'files/test-reports/smoke-tests.xml'], check=True, timeout=15)
     subprocess.run(['adb', 'logcat', '-c'], check=True, timeout=15)
     command = ['adb', 'shell', 'am', 'instrument', '-w', '-r', '-e', 'joydurmRunId', run_id,
+               # ActivityScenario scopes own lifecycle, including the class-scoped
+               # picker fixture. The default finisher kills that fixture at testStarted.
+               # SmokeXmlListener rejects any Activity left alive at suite completion.
+               '-e', 'waitForActivitiesToComplete', 'false',
                '-e', 'listener', 'ai.joydurm.SmokeXmlListener',
                'ai.joydurm.test/androidx.test.runner.AndroidJUnitRunner']
     status = dict(runId=run_id, timeoutSeconds=timeout_seconds, timedOut=False,

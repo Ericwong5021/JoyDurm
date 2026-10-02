@@ -4,6 +4,8 @@ import android.util.Xml
 import android.util.Base64
 import android.os.Bundle
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import org.junit.runner.Description
 import org.junit.runner.Result
 import org.junit.runner.notification.Failure
@@ -29,12 +31,22 @@ class SmokeXmlListener : RunListener() {
     override fun testFinished(description: Description) { tests[description.displayName]?.let { it.duration = System.nanoTime() - it.started } }
     override fun testRunFinished(result: Result) {
         probe?.close()
+        // All fixtures own their ActivityScenario scopes. Reject a lifecycle leak
+        // when the default per-test finisher is disabled for the class-scoped picker.
+        var liveActivities = 0
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+            liveActivities = Stage.values().filter { it != Stage.DESTROYED }
+                .flatMap { monitor.getActivitiesInStage(it) }.distinct().size
+        }
         val directory = File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "test-reports").apply { mkdirs() }
         File(directory, "smoke-tests.xml").outputStream().use { stream ->
             val xml = Xml.newSerializer().apply { setOutput(stream, "UTF-8"); startDocument("UTF-8", true) }
             xml.startTag(null, "testsuite").attribute(null, "name", "JoyDurm Android smoke")
                 .attribute(null, "runId", InstrumentationRegistry.getArguments().getString("joydurmRunId") ?: "missing")
                 .attribute(null, "tests", result.runCount.toString()).attribute(null, "failures", result.failureCount.toString())
+                .attribute(null, "errors", if (liveActivities == 0) "0" else "1")
+                .attribute(null, "liveActivities", liveActivities.toString())
                 .attribute(null, "skipped", result.ignoreCount.toString()).attribute(null, "time", (result.runTime / 1000.0).toString())
             tests.values.forEach { test ->
                 xml.startTag(null, "testcase").attribute(null, "classname", test.description.className)
