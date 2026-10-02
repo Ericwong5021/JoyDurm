@@ -166,11 +166,9 @@ jobs:
           # Match the 37.1.11 build used by the accepted local run; avoid SDK drift.
           # Official archive: emulator-linux_x64-15917651.zip (Google repository).
           emulator-build: 15917651
-          # The existing hosted runner has four cores, but the two-core guest
-          # contended among cold debug JIT, model/UI processing and audio synth
-          # (run36971236291: 13 passes, then the original240s total deadline).
-          # Use that existing capacity; retain every deadline/pixel/clock gate.
-          cores: 4
+          # Stable reference: four cores caused a pre-test Launcher ANR in
+          # run36972198190. Keep the two-core configuration that rendered correctly.
+          cores: 2
           ram-size: 4096M
           disable-animations: true
           emulator-boot-timeout: 180
@@ -189,14 +187,15 @@ jobs:
             nproc > installation/host-cpu-count.txt
             test "$(tr -d '\r\n' < installation/host-cpu-count.txt)" -ge 4
             adb shell nproc > installation/guest-cpu-count.txt
-            test "$(tr -d '\r\n' < installation/guest-cpu-count.txt)" = 4
+            test "$(tr -d '\r\n' < installation/guest-cpu-count.txt)" = 2
             ps -eLo pid,tid,comm > installation/host-threads.txt
             (cd dist && sha256sum --check SHA256SUMS)
             adb install dist/JoyDurm-debug.apk
             adb install -r dist/JoyDurm-debug.apk
             adb install test-apk/app-debug-androidTest.apk
             python3 tools/verification/record_install.py --artifact-report dist/JoyDurm-debug.json --output installation/device-install.json
-            python3 tools/verification/run_android_smoke.py --run-id "$JOYDURM_SMOKE_RUN_ID"
+            python3 tools/verification/android_preflight.py
+            python3 tools/verification/run_android_smoke.py --run-id "$JOYDURM_SMOKE_RUN_ID" --timeout-seconds 360
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

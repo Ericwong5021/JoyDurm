@@ -34,7 +34,7 @@ internal class MainThreadProbe(directory: File, runId: String) : AutoCloseable {
                 val stacks = Thread.getAllStackTraces().entries.sortedWith(
                     compareBy({ if (it.key === mainThread) 0 else 1 }, { it.key.name }))
                 val text = buildString {
-                    append("\nSTALLED test=$testName elapsedMs=${SystemClock.elapsedRealtime()} heartbeatDelayMs=$delay\n")
+                    append("\nSTALLED test=$testName uptimeMs=${SystemClock.elapsedRealtime()} heartbeatDelayMs=$delay\n")
                     stacks.forEach { (thread, frames) ->
                         append("\"${thread.name}\" state=${thread.state}\n")
                         frames.take(40).forEach { append("  at $it\n") }
