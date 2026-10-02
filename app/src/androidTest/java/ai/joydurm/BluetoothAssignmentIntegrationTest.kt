@@ -11,12 +11,10 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
 import android.widget.TextView
 import androidx.test.core.app.ActivityScenario
-import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import ai.joydurm.core.Role
 import ai.joydurm.core.EngineExecutor
-import ai.joydurm.core.BluetoothRoleSelections
 import ai.joydurm.input.ControllerHub
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,8 +22,6 @@ import java.util.UUID
 import ai.joydurm.ui.*
 import org.junit.Assert.*
 import org.junit.Before
-import org.junit.After
-import org.junit.ClassRule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -33,12 +29,6 @@ import java.io.File
 /** Injected radio results exercise UI state only; no Bluetooth/IMU hardware pass is claimed. */
 @RunWith(AndroidJUnit4::class)
 class BluetoothAssignmentIntegrationTest {
-    companion object {
-        // The picker cases share a real MainActivity; renderer lifecycle coverage is
-        // still in the existing smoke suite, and the selection case recreates once.
-        @ClassRule @JvmField val activityRule=ActivityScenarioRule(MainActivity::class.java)
-    }
-    private fun withScenario(block: (ActivityScenario<MainActivity>) -> Unit) = block(activityRule.scenario)
     private val instrumentation get()=InstrumentationRegistry.getInstrumentation()
     private val context get()=instrumentation.targetContext
     private val prefs get()=context.getSharedPreferences("joydurm",Context.MODE_PRIVATE)
@@ -65,29 +55,9 @@ class BluetoothAssignmentIntegrationTest {
                 }
             }
         }
-        activityRule.scenario.onActivity { activity ->
-            val selection=MainActivity::class.java.getDeclaredField("bluetoothSelections"); selection.isAccessible=true
-            selection.set(activity,BluetoothRoleSelections())
-            val inventory=MainActivity::class.java.getDeclaredField("bluetoothInventory"); inventory.isAccessible=true; inventory.set(activity,null)
-            val field=MainActivity::class.java.getDeclaredField("engineExecutor"); field.isAccessible=true
-            (field.get(activity) as EngineExecutor).call { e -> Role.entries.forEach(e::unassign) }.get(2,java.util.concurrent.TimeUnit.SECONDS)
-            val navigate=MainActivity::class.java.getDeclaredMethod("navigate",StagePage::class.java); navigate.isAccessible=true
-            navigate.invoke(activity,StagePage.PLAY)
-        }
-        instrumentation.waitForIdleSync()
-    }
-    @After fun closeOwnedWindowsAndBridge() {
-        activityRule.scenario.onActivity { activity ->
-            picker(activity)?.dismiss()
-            val dialog=MainActivity::class.java.getDeclaredField("activeInputDialog"); dialog.isAccessible=true
-            (dialog.get(activity) as? android.app.AlertDialog)?.dismiss()
-            val hub=MainActivity::class.java.getDeclaredField("hub"); hub.isAccessible=true
-            (hub.get(activity) as ControllerHub).closeBridge()
-        }
-        instrumentation.waitForIdleSync()
     }
     @Test fun actualZeroDeviceClickShowsOwnedPickerAndDeniedPermissionFeedback() {
-        withScenario { scenario ->
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             clickActivity(scenario,"设备"); clickActivity(scenario,"分配左手设备")
             awaitPicker(scenario)
             assertVisible(scenario,"附近设备权限未授予")
@@ -112,7 +82,7 @@ class BluetoothAssignmentIntegrationTest {
     @Test fun realAddressSelectionPairFailureTransferCancelAndRestartRemainHonest() {
         val radio=Radio(BluetoothInventory(true,true,true,false,listOf(left,right)))
         radio.pairError="系统未能开始配对，请重试或打开系统蓝牙。"
-        withScenario { scenario ->
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             clickActivity(scenario,"设备")
             scenario.onActivity { it.showRolePicker(Role.LEFT_HAND,radio) }; awaitPicker(scenario)
             clickPicker(scenario,left.name)
@@ -150,7 +120,7 @@ class BluetoothAssignmentIntegrationTest {
     }
     @Test fun disabledEmptySearchAndPairingResultsRefreshOneWindow() {
         val radio=Radio(BluetoothInventory(true,true,false,false,emptyList()))
-        withScenario { scenario ->
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity { it.showRolePicker(Role.LEFT_FOOT,radio) }; awaitPicker(scenario)
             assertVisible(scenario,"蓝牙已关闭")
             scenario.onActivity { radio.update(radio.state.copy(enabled=true)) }
@@ -170,7 +140,7 @@ class BluetoothAssignmentIntegrationTest {
         }
     }
     @Test fun verifiedUdpInputRequiresExplicitAssociationAndFreshMotion() {
-        withScenario { scenario ->
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             lateinit var hub: ControllerHub
             lateinit var engine: EngineExecutor
             scenario.onActivity { activity ->
