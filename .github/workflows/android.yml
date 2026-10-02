@@ -194,10 +194,11 @@ jobs:
             # the first test (run36968044808). Compile the same installed bytes
             # with standard ART; do not launch/warm the Activity or alter tests.
             # https://source.android.com/docs/core/runtime/configure/art-service
-            set -o pipefail
-            adb shell cmd package compile -m speed -f -v ai.joydurm | tee installation/art-app-compile.txt
+            adb shell cmd package compile -m speed -f -v ai.joydurm > installation/art-app-compile.txt
+            cat installation/art-app-compile.txt
             grep -q 'actualCompilerFilter=speed' installation/art-app-compile.txt
-            adb shell cmd package compile -m speed -f -v ai.joydurm.test | tee installation/art-test-compile.txt
+            adb shell cmd package compile -m speed -f -v ai.joydurm.test > installation/art-test-compile.txt
+            cat installation/art-test-compile.txt
             grep -q 'actualCompilerFilter=speed' installation/art-test-compile.txt
             python3 tools/verification/record_install.py --artifact-report dist/JoyDurm-debug.json --output installation/device-install.json
             python3 tools/verification/run_android_smoke.py --run-id "$JOYDURM_SMOKE_RUN_ID"
