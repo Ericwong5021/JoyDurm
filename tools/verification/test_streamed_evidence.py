@@ -77,7 +77,7 @@ class StreamedEvidenceTest(unittest.TestCase):
 
     def test_finished_runner_keeps_all_gates_when_new_adb_connections_fail(self):
         files = reports('current-run')
-        text = transcript(packets(files, 'current-run')) + 'OK (11 tests)\n'
+        text = transcript(packets(files, 'current-run')) + f'OK ({len(EXPECTED)} tests)\n'
         def adb(command, **kwargs):
             if 'instrument' in command:
                 kwargs['stdout'].write(text.encode())

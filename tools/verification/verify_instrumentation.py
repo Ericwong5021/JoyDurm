@@ -4,6 +4,10 @@ import argparse
 import xml.etree.ElementTree as ET
 
 EXPECTED = {
+    ('ai.joydurm.BluetoothAssignmentIntegrationTest', 'verifiedUdpInputRequiresExplicitAssociationAndFreshMotion'),
+    ('ai.joydurm.BluetoothAssignmentIntegrationTest', 'actualZeroDeviceClickShowsOwnedPickerAndDeniedPermissionFeedback'),
+    ('ai.joydurm.BluetoothAssignmentIntegrationTest', 'realAddressSelectionPairFailureTransferCancelAndRestartRemainHonest'),
+    ('ai.joydurm.BluetoothAssignmentIntegrationTest', 'disabledEmptySearchAndPairingResultsRefreshOneWindow'),
     ('ai.joydurm.StageFlowIntegrationTest', 'setupBackNavigationAndMissingImuRemainHonestBeforeTouchPlaying'),
     ('ai.joydurm.StageFlowIntegrationTest', 'welcomeCanSkipToSoundCheckAndReturnToTouchPlaying'),
     ('ai.joydurm.StageFlowIntegrationTest', 'denyingCameraKeepsPlayPageAndNativeTouchPadsAvailable'),

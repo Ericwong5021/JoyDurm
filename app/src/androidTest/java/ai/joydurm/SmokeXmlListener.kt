@@ -51,7 +51,7 @@ class SmokeXmlListener : RunListener() {
         val runId = InstrumentationRegistry.getArguments().getString("joydurmRunId") ?: "missing"
         listOf("smoke-tests.xml", "ordinary-3d-screen.png", "ordinary-3d-visibility.json", "thread-stalls.txt",
             "ui-failed-play.png", "ui-failed-welcome.png", "ui-failed-place.png", "ui-failed-sound_check.png",
-            "ordinary-3d-render-probe.json", "ordinary-3d-surface.png", "ui-play-render-probe.json", "ui-play-surface.png").forEach { name ->
+            "ordinary-3d-render-probe.json", "ordinary-3d-surface.png", "ui-play-render-probe.json", "ui-play-surface.png", "assignment-permission-denied.png", "assignment-address-selected-no-imu.png", "assignment-test-fixture-paired-no-imu.png").forEach { name ->
             val file = File(directory, name)
             if (file.isFile && file.length() in 1..8_388_608L) {
                 val bytes = file.readBytes()

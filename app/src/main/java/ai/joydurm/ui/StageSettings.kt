@@ -256,11 +256,11 @@ class StageSettings(
             }, 8)
             bindings.add { s ->
                 val device = s.role(role)
-                updateText(name, if (device.bound) device.deviceName ?: "已绑定输入设备" else "尚未绑定设备")
+                updateText(name, (if (device.bound) device.deviceName ?: "已绑定输入设备" else "尚未绑定设备") + device.deviceId?.let { "\n$it" }.orEmpty())
                 updateText(signal, when {
                     !device.bound -> "○ 未绑定"
-                    device.live -> "● 实时数据"
-                    else -> "○ 已绑定 · 等待新数据"
+                    device.live -> device.connectionStatus?.let { "$it\n" }.orEmpty() + "● 实时数据"
+                    else -> (device.connectionStatus ?: "○ 已绑定输入") + "\n○ IMU 未就绪 · 等待真实运动数据"
                 })
                 signal.setTextColor(if (device.live && device.bound) StageTheme.GREEN else StageTheme.MUTED)
                 updateText(telemetry, "累计 ${device.samples} 个样本 · ${device.ageMs?.let { "最新样本 ${it.coerceAtLeast(0)} ms 前" } ?: "尚无样本"}")

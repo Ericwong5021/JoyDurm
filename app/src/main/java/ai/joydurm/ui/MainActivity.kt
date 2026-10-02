@@ -68,6 +68,16 @@ class MainActivity: ComponentActivity() {
     private var arRequested=false
     private var arInstallRequested=false
     private var activeCalibrationDialog: AlertDialog?=null
+    private var activeBluetoothPicker: BluetoothDevicePicker?=null
+    private var activeInputDialog: AlertDialog?=null
+    private lateinit var bluetoothSelections: BluetoothRoleSelections
+    private var bluetoothInventory: BluetoothInventory?=null
+    private val bluetoothPermissions=registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        activeBluetoothPicker?.refresh(); if(::hub.isInitialized)hub.refresh()
+    }
+    private val bluetoothEnable=registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        activeBluetoothPicker?.refresh()
+    }
     private var hitCount=0
     private var sceneGeneration=0L
     private val frameRecording=FrameRecording(4000)
@@ -132,6 +142,7 @@ class MainActivity: ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         store=SettingsStore(this)
+        bluetoothSelections=store.loadBluetoothSelections()
         restoredPage=savedInstanceState?.getString("stagePage")?.let { name -> StagePage.entries.firstOrNull { it.name==name } }
         bpm=store.prefs.getInt("bpm",100).coerceIn(30,240)
         arInstallRequested=savedInstanceState?.getBoolean("arInstallRequested") ?: false
@@ -180,29 +191,100 @@ class MainActivity: ComponentActivity() {
         val now=SystemClock.elapsedRealtimeNanos(); val snap=engineExecutor.snapshot()
         if(::hub.isInitialized && (diagnostic==null || now-diagnosticTimeNs>500_000_000L)) {
             diagnostic=hub.diagnostics(); diagnosticTimeNs=now
+            if(bluetoothSelections.all().isNotEmpty()) bluetoothInventory=AndroidBluetoothPlatform(this).inventory()
         }
         val devices=diagnostic?.devices.orEmpty().associateBy { it.id }
         val foot=snap.roles[Role.LEFT_FOOT]!!
         if(foot.needsRecenter || hatClosedEpoch!=foot.epoch.value)hatClosedEpoch=null
         return StageState(Role.entries.map { role ->
             val value=snap.roles[role]!!; val device=devices[value.device]
-            StageRole(role,device?.name,value.device!=null,
+            val selected=bluetoothSelections.get(role)
+            val bluetoothState=selected?.let { selection ->
+                val inventory=bluetoothInventory
+                when {
+                    inventory?.permitted!=true -> "已选择角色 · 需要附近设备权限"
+                    !inventory.enabled -> "已选择角色 · 蓝牙已关闭"
+                    inventory.devices.firstOrNull { it.address.equals(selection.address,true) }?.bond==android.bluetooth.BluetoothDevice.BOND_BONDED -> "已选择角色 · 已配对 · 连接由系统管理"
+                    inventory.devices.firstOrNull { it.address.equals(selection.address,true) }?.bond==android.bluetooth.BluetoothDevice.BOND_BONDING -> "已选择角色 · 正在配对"
+                    else -> "已选择角色 · 尚未配对"
+                }
+            }
+            StageRole(role,selected?.name ?: device?.name,value.device!=null || selected!=null,
                 value.latestTimeNs?.let { now-it in 0..500_000_000L }==true,
                 value.calibration!=null,value.needsRecenter,value.targetCount,device?.sampleCount ?: 0,
-                device?.lastSampleTimeNs?.let { (now-it).coerceAtLeast(0)/1_000_000 },device?.lastError,value.threshold)
+                device?.lastSampleTimeNs?.let { (now-it).coerceAtLeast(0)/1_000_000 },device?.lastError,value.threshold,bluetoothState,selected?.address ?: value.device)
         },snap.openness,Math.toDegrees(snap.hatRange),hatClosedEpoch!=null,foot.hatCalibrated,
             ::scene.isInitialized && scene.ar,::scene.isInitialized && scene.placed,
             audio.kit,(audio.volume*100).roundToInt(),bpm,metronome,
             diagnostic?.devices?.count { it.motion } ?: 0,lastStatus,"由 Android 系统管理")
     }
     private fun navigate(page: StagePage) { stageUi.show(page,stageState()) }
-    private fun assignRole(role: Role) {
-        val all=hub.devices.values.filter { it.motion }.sortedBy { it.id }
-        if(all.isEmpty()) { showStatus("暂无实时 IMU，请检查连接诊断；也可先用触摸鼓垫演奏"); return }
-        AlertDialog.Builder(this).setTitle("分配${role.label}")
-            .setItems(all.map { "${it.name} · ${it.transport} · ${it.id}" }.toTypedArray()) { _,i ->
-                engineCommand("${role.label} 已绑定，请静置校准并归中") { it.assign(role,all[i].id) }
-            }.show()
+    private fun requestBluetoothPermissions() {
+        val required=if(Build.VERSION.SDK_INT>=31) arrayOf(Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_SCAN)
+            else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        val missing=required.filter { checkSelfPermission(it)!=PackageManager.PERMISSION_GRANTED }
+        if(missing.isNotEmpty())bluetoothPermissions.launch(missing.toTypedArray())
+        else activeBluetoothPicker?.refresh()
+    }
+    private fun openSystemBluetooth() {
+        runCatching { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+            .onFailure { showStatus("无法打开系统蓝牙，请在手机设置中检查连接") }
+    }
+    private fun assignRole(role: Role) = showRolePicker(role,AndroidBluetoothPlatform(this))
+    internal fun showRolePicker(role: Role,platform: BluetoothPlatform) {
+        if(activeBluetoothPicker?.dialog?.isShowing==true || activeInputDialog?.isShowing==true) { platform.close(); return }
+        lateinit var picker: BluetoothDevicePicker
+        picker=BluetoothDevicePicker(this,role,platform,
+            { bluetoothSelections.get(role)?.address },bluetoothSelections::owner,
+            { choice ->
+                val unchanged=bluetoothSelections.get(role)?.address.equals(choice.address,true)
+                val displaced=bluetoothSelections.select(role,SelectedBluetoothDevice(choice.address,choice.name))
+                store.saveBluetoothSelections(bluetoothSelections); diagnosticTimeNs=0
+                engineCommand("${role.label} 已选择 ${choice.name}；IMU 尚需确认") { e ->
+                    displaced?.let { e.unassign(it) }
+                    if(!unchanged || e.snapshot().roles[role]?.device==null)e.assign(role,"bluetooth:${choice.address}")
+                }
+            },::requestBluetoothPermissions,
+            { runCatching { bluetoothEnable.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)) }
+                .onFailure { openSystemBluetooth() } },::openSystemBluetooth,
+            { picker.dismiss(); showRoleInputs(role) },
+            { picker.dismiss(); devicesDialog() },
+            { if(activeBluetoothPicker===picker)activeBluetoothPicker=null })
+        activeBluetoothPicker=picker; picker.show()
+    }
+    private fun showRoleInputs(role: Role) {
+        if(activeInputDialog?.isShowing==true)return
+        hub.refresh(); val inputs=hub.devices.values.sortedBy { it.id }
+        val body=column()
+        val selected=bluetoothSelections.get(role)
+        body.addView(text(selected?.let { "${role.label} 已选择 ${it.name} · ${it.address}" } ?: "为${role.label}选择实际输入",14,true))
+        body.addView(text("Android 未公开蓝牙地址与手柄输入 ID 的对应关系。请按真实设备确认输入；同名手柄不会自动猜测关联。没有实时 IMU 时仍可关联，但不能校准或体感演奏。",13))
+        if(inputs.isEmpty())body.addView(text("暂无控制器输入。请先在系统蓝牙完成配对和连接，再返回刷新。",14))
+        val warning=text("",14); body.addView(warning)
+        var pendingBind: (() -> Unit)?=null
+        val confirmInput=button("确认转移输入到${role.label}") { pendingBind?.invoke() }
+        confirmInput.visibility=View.GONE; body.addView(confirmInput)
+        inputs.forEach { candidate -> body.addView(button("${candidate.name} · ${candidate.transport}\n${candidate.id}\n${if(candidate.motion) "实时 IMU" else "尚无实时 IMU"}") {
+            val previous=engineExecutor.snapshot().roles.entries.firstOrNull { it.key!=role && it.value.device==candidate.id }?.key
+            fun bind() {
+                if(!hub.devices.containsKey(candidate.id)) { warning.text="输入已断开，请刷新后重新选择。"; return }
+                if(previous!=null)bluetoothSelections.remove(previous)
+                store.saveBluetoothSelections(bluetoothSelections)
+                engineCommand("${role.label} 已关联 ${candidate.name}；请确认实时 IMU 后校准") { it.assign(role,candidate.id) }
+                activeInputDialog?.dismiss()
+            }
+            if(previous!=null) {
+                warning.text="此输入正用于${previous.label}；确认后转移到${role.label}。"
+                pendingBind=::bind; confirmInput.visibility=View.VISIBLE
+            } else bind()
+        }) }
+        body.addView(button("刷新控制器输入") { activeInputDialog?.dismiss(); showRoleInputs(role) })
+        body.addView(button("系统蓝牙连接") { openSystemBluetooth() })
+        val dialog=AlertDialog.Builder(this).setTitle("关联${role.label}输入")
+            .setView(ScrollView(this).apply { addView(body) }).setNegativeButton("取消",null).create()
+        activeInputDialog=dialog
+        dialog.setOnDismissListener { if(activeInputDialog===dialog)activeInputDialog=null }
+        dialog.show()
     }
     private fun bindDirection(role: Role) {
         val targets=Drum.entries.filter { it!=Drum.KICK && it!=Drum.CHICK }
@@ -220,11 +302,7 @@ class MainActivity: ComponentActivity() {
     private val stageActions=object: StageActions {
         override fun navigate(page: StagePage)=this@MainActivity.navigate(page)
         override fun back() { if(!stageUi.back())this@MainActivity.navigate(StagePage.PLAY) }
-        override fun pairBluetooth() {
-            if(Build.VERSION.SDK_INT>=31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=PackageManager.PERMISSION_GRANTED)
-                permissions.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
-            startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
-        }
+        override fun pairBluetooth() = openSystemBluetooth()
         override fun connectionDetails()=devicesDialog()
         override fun assign(role: Role)=assignRole(role)
         override fun calibrate(role: Role)=this@MainActivity.calibrate(role)
@@ -326,11 +404,7 @@ class MainActivity: ComponentActivity() {
             main.post { copy(report,"能力报告（实测状态见报告）") }
         } })
         body.addView(button("保存最近 IMU 样本") { frameExporter.launch("JoyDurm-imu.json") })
-        Role.entries.forEach { role -> body.addView(button("绑定 ${role.label}") {
-            val all=hub.devices.values.filter { it.motion }.sortedBy { it.id }
-            if(all.isEmpty()) { showStatus("暂无提供 IMU 的设备"); return@button }
-            AlertDialog.Builder(this).setTitle(role.label).setItems(all.map { "${it.name} · ${it.transport} · ${it.id}" }.toTypedArray()) { _,i -> engineCommand("${role.label} 已绑定，请归中") { it.assign(role,all[i].id) } }.show()
-        }) }
+        Role.entries.forEach { role -> body.addView(button("绑定 ${role.label}") { assignRole(role) }) }
         body.addView(text("LAN 桥接（同一 Wi-Fi）",15,true))
         val host=field("手机 LAN 地址（多网卡时选择 Wi-Fi 地址）",hub.diagnostics().lanAddresses.firstOrNull() ?: ""); body.addView(host)
         val port=field("UDP 端口",store.prefs.getInt("port",18185).toString()); body.addView(port)
@@ -475,7 +549,7 @@ class MainActivity: ComponentActivity() {
     } }
     override fun onResume() {
         super.onResume(); resumed=true; audio.resume(); hub.start()
-        darkSystemBars()
+        darkSystemBars(); activeBluetoothPicker?.refresh()
         if(store.prefs.getBoolean("bridge",false)) runCatching { hub.listenBridge(store.prefs.getInt("port",18185),store.prefs.getString("token","")!!) }.onFailure { showStatus("桥接启动失败：${it.message}") }
         sceneHost.postOnAnimation(update); if(metronome)setBeatRunning(true)
         if(arInstallRequested && checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)enableAr()
@@ -499,7 +573,7 @@ class MainActivity: ComponentActivity() {
         super.onSaveInstanceState(outState)
     }
     override fun onPause() { activeCalibrationDialog?.dismiss(); resumed=false; hub.stop(); sceneHost.removeCallbacks(update); setBeatRunning(false); audio.pause(); engineCommand { }; if(::scene.isInitialized)store.saveScene(scene); super.onPause() }
-    override fun onDestroy() { if(::stageUi.isInitialized)stageUi.close(); sceneGeneration++; importWorker.shutdown(); main.removeCallbacksAndMessages(null); hub.stop(); engineExecutor.close(); beatThread.quitSafely(); audio.close(); scene.destroy(); super.onDestroy() }
+    override fun onDestroy() { activeBluetoothPicker?.dismiss(); activeInputDialog?.dismiss(); if(::stageUi.isInitialized)stageUi.close(); sceneGeneration++; importWorker.shutdown(); main.removeCallbacksAndMessages(null); hub.stop(); engineExecutor.close(); beatThread.quitSafely(); audio.close(); scene.destroy(); super.onDestroy() }
     override fun onKeyDown(keyCode: Int,event: KeyEvent): Boolean {
         val drum=when(keyCode) { KeyEvent.KEYCODE_A,KeyEvent.KEYCODE_BUTTON_A -> Drum.SNARE; KeyEvent.KEYCODE_S,KeyEvent.KEYCODE_BUTTON_B -> Drum.KICK; KeyEvent.KEYCODE_D,KeyEvent.KEYCODE_BUTTON_X -> Drum.HAT; KeyEvent.KEYCODE_F,KeyEvent.KEYCODE_BUTTON_Y -> Drum.CRASH; else -> null }
         if(drum!=null && event.repeatCount==0) { engineCommand { it.trigger(drum,timeNs=SystemClock.elapsedRealtimeNanos()) }; return true }; return super.onKeyDown(keyCode,event)

@@ -8,6 +8,19 @@ import org.json.JSONObject
 
 class SettingsStore(context: Context) {
     val prefs=context.getSharedPreferences("joydurm",Context.MODE_PRIVATE)
+    fun loadBluetoothSelections(): BluetoothRoleSelections {
+        val all=runCatching { JSONObject(prefs.getString("bluetoothRoles","{}")!!) }.getOrDefault(JSONObject())
+        val selections=BluetoothRoleSelections()
+        Role.entries.forEach { role -> all.optJSONObject(role.name)?.let { value -> runCatching {
+            selections.select(role,SelectedBluetoothDevice(value.getString("address"),value.getString("name")))
+        } } }
+        return selections
+    }
+    fun saveBluetoothSelections(selections: BluetoothRoleSelections) {
+        val all=JSONObject()
+        selections.all().forEach { (role,device) -> all.put(role.name,JSONObject().put("address",device.address).put("name",device.name)) }
+        prefs.edit().putString("bluetoothRoles",all.toString()).apply()
+    }
     private fun vec(v: Vec3)=JSONArray(listOf(v.x,v.y,v.z))
     private fun finite(value: Double): Double { require(value.isFinite()); return value }
     private fun readVec(a: JSONArray)=Vec3(finite(a.getDouble(0)),finite(a.getDouble(1)),finite(a.getDouble(2)))

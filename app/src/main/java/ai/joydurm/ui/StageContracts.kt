@@ -17,6 +17,8 @@ data class StageRole(
     val ageMs: Long? = null,
     val error: String? = null,
     val threshold: Double = 2.2,
+    val connectionStatus: String? = null,
+    val deviceId: String? = null,
 )
 
 data class StageState(

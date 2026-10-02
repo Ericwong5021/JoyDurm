@@ -43,6 +43,13 @@ class DrumEngine(var onHatControl: (HatControl) -> Unit = {}, private val onHit:
         if(role==Role.LEFT_FOOT) choke("role assigned")
         changed()
     }
+    fun unassign(role: Role) {
+        val state=roles.getValue(role)
+        calibrators.remove(role); invalidate(state)
+        state.device=null; state.calibration=null; state.session=null; state.retiredSessions.clear()
+        if(role==Role.LEFT_FOOT) choke("role unassigned")
+        changed()
+    }
     /** Queue loss breaks reliable integration even when the timestamp gap is short. */
     fun suspendMotion(device: String) {
         roles.entries.filter { it.value.device==device }.forEach { (role,state) ->

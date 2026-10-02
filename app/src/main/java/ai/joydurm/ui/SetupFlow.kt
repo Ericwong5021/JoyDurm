@@ -265,7 +265,7 @@ class SetupFlow(
 
     private fun connectionText(role: StageRole): String = when {
         role.live -> "已连接 ✓\n${role.deviceName ?: role.role.label}"
-        role.bound -> "等待运动数据\n${role.deviceName ?: "已分配设备"}"
+        role.bound -> "${role.connectionStatus ?: "已分配输入"}\n等待运动数据\n${role.deviceName ?: "已分配设备"}\n${role.deviceId.orEmpty()}"
         else -> "未分配运动设备"
     }
 

@@ -69,7 +69,9 @@ class ControllerHub(private val context: Context, private val sample: (ImuSample
             if (!running) return
             val now = SystemClock.elapsedRealtimeNanos()
             decoder?.poll(now)?.let(::handleBridge)
-            expire(now)
+            // poll() can deliver a batch and record its actual receipt after `now`.
+            // Expiring against the earlier tick falsely reports a negative age.
+            expire(SystemClock.elapsedRealtimeNanos())
             handler?.postDelayed(this,10)
         }
     }

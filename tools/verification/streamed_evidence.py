@@ -8,7 +8,8 @@ from pathlib import Path
 REQUIRED = {'smoke-tests.xml', 'ordinary-3d-screen.png', 'ordinary-3d-visibility.json'}
 ALLOWED = REQUIRED | {'thread-stalls.txt', 'ui-failed-play.png', 'ui-failed-welcome.png',
                       'ui-failed-place.png', 'ui-failed-sound_check.png', 'ordinary-3d-render-probe.json',
-                      'ordinary-3d-surface.png', 'ui-play-render-probe.json', 'ui-play-surface.png'}
+                      'ordinary-3d-surface.png', 'ui-play-render-probe.json', 'ui-play-surface.png', 'assignment-permission-denied.png',
+                      'assignment-address-selected-no-imu.png', 'assignment-test-fixture-paired-no-imu.png'}
 PREFIX = 'INSTRUMENTATION_STATUS: joydurmEvidence='
 CHUNK_BYTES = 12_288
 MAX_BYTES = 8_388_608
