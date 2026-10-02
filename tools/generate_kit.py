@@ -43,7 +43,7 @@ def tripod(parent, height):
         end = np.array([math.cos(angle) * 0.23, -height + 0.02, math.sin(angle) * 0.23])
         mesh = trimesh.creation.cylinder(radius=0.009, segment=[start, end], sections=12)
         mesh.visual = trimesh.visual.TextureVisuals(material=materials["chrome"])
-        scene.add_geometry(mesh, node_name=f"{parent}_leg{k}", parent_node_name=parent)
+        scene.add_geometry(mesh, node_name=f"{parent}_leg{k}", geom_name=f"{parent}_leg{k}", parent_node_name=parent)
 
 
 parts = [
@@ -76,14 +76,16 @@ for name, p, radius in [("hat", (-0.85, 0.95, 0.42), 0.23), ("crash", (-0.74, 1.
     mesh = trimesh.creation.revolve(profile, sections=64)
     mesh.apply_transform(trimesh.transformations.rotation_matrix(-math.pi/2, [1, 0, 0]))
     mesh.visual = trimesh.visual.TextureVisuals(material=materials["brass"])
-    scene.add_geometry(mesh, node_name=name + "_surface", parent_node_name=cymbal)
+    scene.add_geometry(mesh, node_name=name + "_surface", geom_name=name + "_surface", parent_node_name=cymbal)
     cylinder(name + "_cap", cymbal, 0.017, 0.021, (0, 0.045, 0), material="black")
     if name == "hat":
         lower = mesh.copy()
         lower.apply_translation([0, -0.024, 0])
-        scene.add_geometry(lower, node_name="hat_lower", parent_node_name=name)
+        scene.add_geometry(lower, node_name="hat_lower", geom_name="hat_lower", parent_node_name=name)
 
-node("beater", position=(0, 0.08, -0.06))
+# Keep the original world placement while making the complete pedal assembly
+# inherit every kick translation, rotation and scale. Local = world - kick.
+node("beater", parent="kick", position=(0, 0.08 - 0.34, -0.06 - (-0.38)))
 cylinder("beater_arm", "beater", 0.011, 0.3, (0, 0.15, 0))
 cylinder("beater_head", "beater", 0.045, 0.055, (0, 0.31, 0), material="skin", rx=90)
 out = ROOT / "app/src/main/assets/models/joydurm-kit.glb"

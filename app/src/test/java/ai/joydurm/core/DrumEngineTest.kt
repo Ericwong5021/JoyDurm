@@ -38,10 +38,17 @@ class DrumEngineTest {
     @Test fun footAngleOpensHatThenClosingProducesChick() {
         val hits=mutableListOf<Hit>(); val e=DrumEngine { hits.add(it) }; e.assign(Role.LEFT_FOOT,"F")
         var t=1_000_000_000L
-        repeat(250) { t+=5_000_000; e.process(ImuSample("F",t,Vec3(0.0,-9.80665*sin(0.5),9.80665*cos(0.5)),Vec3())) }
-        assertTrue(e.openness>0.75f)
-        repeat(300) { t+=5_000_000; e.process(ImuSample("F",t,Vec3(0.0,0.0,9.80665),Vec3())) }
-        assertTrue(e.openness<0.15f); assertEquals(1,hits.count { it.drum==Drum.CHICK })
+        fun feed(angle: Double, gyro: Double=0.0) {
+            t+=5_000_000L
+            val q=Quaternion.rotation(Vec3(angle,0.0,0.0))
+            e.process(ImuSample("F",t,q.conjugate().rotate(Vec3(0.0,0.0,9.80665)),Vec3(gyro,0.0,0.0)))
+        }
+        feed(0.0); e.recenter(Role.LEFT_FOOT); e.captureHatClosed()
+        repeat(100) { feed((it+1)*0.005,1.0) }; e.captureHatOpen()
+        repeat(100) { feed(0.5) }; assertTrue(e.openness>0.95f)
+        repeat(20) { feed(0.5-(it+1)*0.025,-5.0) }
+        repeat(100) { feed(0.0) }
+        assertTrue(e.openness<0.08f); assertEquals(1,hits.count { it.drum==Drum.CHICK })
     }
     @Test fun rejectsNonFiniteAndOutOfOrderMotion() {
         val e=DrumEngine {}; e.assign(Role.RIGHT_HAND,"R")
@@ -51,6 +58,7 @@ class DrumEngineTest {
     }
     @Test fun stoppedFootDoesNotProduceRepeatedKick() {
         val hits=mutableListOf<Hit>(); val e=DrumEngine { hits.add(it) }; e.assign(Role.RIGHT_FOOT,"F")
+        e.process(ImuSample("F",995_000_000L,Vec3(0.0,0.0,9.80665),Vec3())); e.recenter(Role.RIGHT_FOOT)
         repeat(1000) { e.process(ImuSample("F",1_000_000_000+it*5_000_000L,Vec3(0.0,0.0,9.80665),Vec3())) }
         assertTrue(hits.isEmpty())
     }

@@ -31,3 +31,13 @@ https://developers.google.com/ar/develop
 
 Original bundled GLB geometry: CC0 1.0 Universal.
 See app/src/main/assets/models/LICENSE.txt.
+
+Google Material Design Icons (15 outlined icons): Apache License 2.0.
+Pinned source commit bd8cb85bd4bad964fe6918f79665bb40c3a8efef.
+https://github.com/google/material-design-icons
+See docs/ui-icons-provenance.json and docs/MATERIAL-ICONS-LICENSE.txt.
+
+Original UI controller illustration atlas: generated for this project; MIT.
+See docs/controller-asset-provenance.json for generation prompt and digest.
+Kit UI preview: actual native renderer screenshot of the original CC0 kit,
+within JoyDurm's original MIT UI. See docs/UI-REFERENCE-MAPPING.md.

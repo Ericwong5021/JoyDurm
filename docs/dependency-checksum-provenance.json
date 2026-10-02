@@ -1,0 +1,40 @@
+{
+  "artifacts": [
+    {
+      "artifact": "aapt2-8.9.1-12782657-linux.jar",
+      "source": "https://dl.google.com/android/maven2/com/android/tools/build/aapt2/8.9.1-12782657/aapt2-8.9.1-12782657-linux.jar",
+      "checkedOn": "2026-10-01T06:10:33.099224+00:00",
+      "bytes": 2315715,
+      "sha256": "8cedaf4d9166beac9074d96eda54792158507f9e7aa65b0e4daa0e86aa511ded",
+      "upstreamSha1": "e662d64ca568062a339e8f701680ab9e8539562d",
+      "trustScope": "Initial checksum trust from Google official Maven over HTTPS; checked against published SHA1. This is integrity evidence, not vulnerability assessment."
+    },
+    {
+      "artifact": "junit-bom-5.10.2.module",
+      "source": "https://repo.maven.apache.org/maven2/org/junit/junit-bom/5.10.2/junit-bom-5.10.2.module",
+      "checkedOn": "2026-10-01T06:30:10.798200+00:00",
+      "bytes": 6995,
+      "sha256": "de23b114b3e4119a8fe6eb17bed5a3852816698bace67071579d6d927ebb080a",
+      "upstreamSha1": "ce536748a853ae6ac09e7815fce0678a96cff778",
+      "trustScope": "Initial checksum trust from official Maven Central over HTTPS, cross-checked with published SHA1; precise metadata only, no trust exemption or vulnerability claim"
+    },
+    {
+      "artifact": "junit-bom-5.9.2.module",
+      "source": "https://repo.maven.apache.org/maven2/org/junit/junit-bom/5.9.2/junit-bom-5.9.2.module",
+      "checkedOn": "2026-10-01T06:30:10.798611+00:00",
+      "bytes": 6956,
+      "sha256": "ab137ba5a8e32c9b066bf9126a1c76dd5614b724ba5c0b02549772b5e9f4cf1f",
+      "upstreamSha1": "911eb82319eec8e880e4d32ab4da7323837dfc00",
+      "trustScope": "Initial checksum trust from official Maven Central over HTTPS, cross-checked with published SHA1; precise metadata only, no trust exemption or vulnerability claim"
+    },
+    {
+      "artifact": "kotlinx-coroutines-bom-1.8.0.pom",
+      "source": "https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-bom/1.8.0/kotlinx-coroutines-bom-1.8.0.pom",
+      "checkedOn": "2026-10-01T06:30:10.798737+00:00",
+      "bytes": 4291,
+      "sha256": "1239e9dbe1397cd5971342956b2511bc3ace7b641842e4372a088dcfa8b9ad55",
+      "upstreamSha1": "ffe074f050e215c80d7d76f740f8c1095a8da403",
+      "trustScope": "Initial checksum trust from official Maven Central over HTTPS, cross-checked with published SHA1; precise metadata only, no trust exemption or vulnerability claim"
+    }
+  ]
+}

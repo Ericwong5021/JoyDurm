@@ -1,8 +1,16 @@
 package ai.joydurm.audio
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.SoundPool
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import ai.joydurm.core.*
 import java.io.File
@@ -13,20 +21,51 @@ import kotlin.math.*
 import kotlin.random.Random
 
 /** Offline one-shot synthesis + Android's native polyphonic SoundPool. No audio generation on the hit path. */
-class DrumAudio(private val context: Context,private val status: (String)->Unit) {
-    private val pool=SoundPool.Builder().setMaxStreams(24).setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()).build()
+class DrumAudio(context: Context,private val status: (String)->Unit): AudioSink {
+    private val context=context.applicationContext
+    private val attributes=AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
+    private val pool=SoundPool.Builder().setMaxStreams(24).setAudioAttributes(attributes).build()
     private val lock=Any()
     private val slots=SampleSlots()
     private val callbacks=mutableMapOf<Int,(Boolean)->Unit>()
     private val worker=Executors.newSingleThreadExecutor()
-    private val main=android.os.Handler(android.os.Looper.getMainLooper())
-    private val openStreams=mutableMapOf<Int,Long>()
+    private val main=Handler(Looper.getMainLooper())
+    private val audioManager=this.context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    val trace=AudioTrace()
+    private val playback=VoicePlayback(slots,object: SampleBackend {
+        override fun play(sampleId: Int,gain: Float)=pool.play(sampleId,gain,gain,1,0,1f)
+        override fun stop(streamId: Int) { pool.stop(streamId) }
+    },SystemClock::elapsedRealtimeNanos,trace)
+    private var lifecyclePaused=true
+    private var focusGranted=false
+    private val focusRequest=AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+        .setAudioAttributes(attributes).setAcceptsDelayedFocusGain(false).setWillPauseWhenDucked(true)
+        .setOnAudioFocusChangeListener({ change ->
+            synchronized(lock) {
+                if(!closed) {
+                    focusGranted=change==AudioManager.AUDIOFOCUS_GAIN
+                    if(focusGranted && !lifecyclePaused) playback.resume()
+                    else playback.pause("audio-focus-$change")
+                }
+            }
+        },main).build()
+    private val noisyReceiver=object: BroadcastReceiver() {
+        override fun onReceive(context: Context?,intent: Intent?) {
+            if(intent?.action==AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                pause()
+                notifyStatus("音频输出设备已断开，已止音；返回应用后恢复")
+            }
+        }
+    }
     @Volatile var kit=0
     @Volatile var volume=0.8f
     @Volatile private var closed=false
     private var announcedReady=false
     val kitNames=listOf("Studio · 合成鼓","Electronic · 电子","Lo-fi · 柔和")
     init {
+        val noisyFilter=IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+        if(Build.VERSION.SDK_INT>=33) this.context.registerReceiver(noisyReceiver,noisyFilter,Context.RECEIVER_NOT_EXPORTED)
+        else this.context.registerReceiver(noisyReceiver,noisyFilter)
         pool.setOnLoadCompleteListener { _,id,result ->
             var callback: ((Boolean)->Unit)?=null
             var success=false
@@ -38,21 +77,21 @@ class DrumAudio(private val context: Context,private val status: (String)->Unit)
                     success=completion?.activated==true
                     completion?.unload?.let { pool.unload(it) }
                     if(result!=0) notice="音色加载失败 ($result)，保留原有音色"
-                    if(!announcedReady && slots.loadedCount==3*(Drum.entries.size+3)) { announcedReady=true; notice="音色已就绪" }
+                    if(!announcedReady && slots.loadedCount==3*SoundVoice.entries.size) { announcedReady=true; notice="音色已就绪" }
                 }
             }
-            notice?.let(status)
+            notice?.let(::notifyStatus)
             callback?.let { done -> main.post { done(success) } }
         }
         worker.execute {
             try {
-                for(bank in 0..2) for(name in Drum.entries.map { it.name }+listOf("HAT_HALF","HAT_OPEN","CLICK")) {
+                for(bank in 0..2) for(voice in SoundVoice.entries) {
                     if(closed) return@execute
-                    val f=File(context.cacheDir,"drum-$bank-$name.wav")
-                    if(!f.exists()) f.writeBytes(synthesize(name,bank))
-                    load(f,"$bank:$name",null)
+                    val f=File(this.context.cacheDir,"drum-$bank-${voice.sampleName}.wav")
+                    if(!f.exists()) f.writeBytes(synthesize(voice.sampleName,bank))
+                    load(f,"$bank:${voice.sampleName}",null)
                 }
-            } catch(e: Exception) { if(!closed) status("音频初始化失败：${e.message}") }
+            } catch(e: Exception) { if(!closed) notifyStatus("音频初始化失败：${e.message}") }
         }
     }
     private fun load(file: File,key: String,onComplete: ((Boolean)->Unit)?) {
@@ -66,41 +105,64 @@ class DrumAudio(private val context: Context,private val status: (String)->Unit)
             }
         }
         if(rejected) {
-            if(!closed) status("音色未能加载，保留原有音色")
+            if(!closed) notifyStatus("音色未能加载，保留原有音色")
             onComplete?.let { main.post { it(false) } }
         }
     }
-    fun play(hit: Hit) = synchronized(lock) {
-        if(closed) return@synchronized
-        // A closed strike also chokes a ringing open hat, even if no foot chick was detected.
-        if(hit.drum==Drum.CHICK || (hit.drum==Drum.HAT && hit.openness<=0.15f)) {
-            openStreams.keys.forEach { pool.stop(it) }; openStreams.clear()
-        }
-        val name=if(hit.drum==Drum.HAT) when { hit.openness>0.65f -> "HAT_OPEN"; hit.openness>0.15f -> "HAT_HALF"; else -> "HAT" } else hit.drum.name
-        playName(name,hit.velocity)
+    override fun play(hit: Hit): Int = synchronized(lock) {
+        if(closed) 0 else playback.play(hit,kit,volume)
     }
-    fun click() = synchronized(lock) { if(!closed) playName("CLICK",0.5f) }
-    private fun playName(name: String,velocity: Float) {
-        if(!velocity.isFinite() || !volume.isFinite()) return
-        val id=slots.id("$kit:$name") ?: return
-        val gain=(velocity*volume).coerceIn(0f,1f)
-        val stream=pool.play(id,gain,gain,1,0,1f)
-        if(name=="HAT_OPEN" || name=="HAT_HALF") {
-            val now=SystemClock.elapsedRealtimeNanos()
-            openStreams.entries.removeAll { now-it.value>3_000_000_000L }
-            if(stream!=0)openStreams[stream]=now
-        }
+
+    fun playVoice(voice: SoundVoice,velocity: Float=0.8f,actionTimeNs: Long=SystemClock.elapsedRealtimeNanos()): Int = synchronized(lock) {
+        if(closed) 0 else playback.playVoice(voice,velocity,kit,volume,actionTimeNs)
     }
+    fun click(actionTimeNs: Long=SystemClock.elapsedRealtimeNanos()): Int=playVoice(SoundVoice.CLICK,0.5f,actionTimeNs)
+    override fun control(control: HatControl) = synchronized(lock) { if(!closed) playback.control(control) }
+    override fun chokeAll() = synchronized(lock) { if(!closed) playback.chokeAll() }
+
+    /** Backgrounding and output/focus loss stop all voices; no old sounds are resumed. */
+    override fun pause() {
+        synchronized(lock) {
+            if(closed) return
+            lifecyclePaused=true; focusGranted=false
+            playback.pause("lifecycle-or-output-pause")
+        }
+        audioManager.abandonAudioFocusRequest(focusRequest)
+    }
+    override fun resume(): Boolean {
+        synchronized(lock) { if(closed) return false; lifecyclePaused=false }
+        val granted=audioManager.requestAudioFocus(focusRequest)==AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        val active=synchronized(lock) {
+            if(closed || lifecyclePaused) false
+            else {
+                focusGranted=granted
+                if(granted) playback.resume() else playback.pause("focus-request-denied")
+                true
+            }
+        }
+        if(!active) {
+            audioManager.abandonAudioFocusRequest(focusRequest)
+            return false
+        }
+        if(!granted) notifyStatus("未获得音频焦点，演奏已静音；返回应用后重试")
+        return granted
+    }
+
+    fun exportTraceCsv(file: File) { trace.export(file) }
+    private fun notifyStatus(message: String) { main.post { if(!closed) status(message) } }
     /** Completion is delivered on the main thread after the sample actually decodes. */
     fun importWav(file: File,drum: Drum,bank: Int=kit,onComplete: ((Boolean)->Unit)?=null) {
+        importWav(file,SoundVoice.fromDrum(drum),bank,onComplete)
+    }
+    fun importWav(file: File,voice: SoundVoice,bank: Int=kit,onComplete: ((Boolean)->Unit)?=null) {
         require(bank in 0..2) { "音色库无效" }
         require(file.length() in 44..1_000_000) { "WAV 必须小于 1 MB" }
         WaveValidator.validate(file.readBytes())
         try {
             worker.execute {
-                try { load(file,"$bank:${drum.name}",onComplete) }
+                try { load(file,"$bank:${voice.sampleName}",onComplete) }
                 catch(e: Exception) {
-                    if(!closed) status("音色加载失败：${e.message}")
+                    if(!closed) notifyStatus("音色加载失败：${e.message}")
                     onComplete?.let { main.post { it(false) } }
                 }
             }
@@ -110,14 +172,17 @@ class DrumAudio(private val context: Context,private val status: (String)->Unit)
         val canceled=synchronized(lock) {
             if(closed) return
             closed=true
+            playback.pause("close")
             val pending=callbacks.values.toList()
-            callbacks.clear(); slots.clear(); openStreams.clear()
+            callbacks.clear(); slots.clear()
+            pool.setOnLoadCompleteListener(null)
+            pool.release()
             pending
         }
         // Drain queued loaders: they see closed and report failure without touching the pool.
         worker.shutdown()
-        pool.setOnLoadCompleteListener(null)
-        pool.release()
+        audioManager.abandonAudioFocusRequest(focusRequest)
+        runCatching { context.unregisterReceiver(noisyReceiver) }
         canceled.forEach { done -> main.post { done(false) } }
     }
     companion object {

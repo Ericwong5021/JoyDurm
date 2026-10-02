@@ -1,11 +1,13 @@
 package ai.joydurm.render
 
 import android.graphics.Color
+import android.os.SystemClock
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import com.google.ar.core.Config
 import com.google.ar.core.Plane
 import com.google.ar.core.TrackingState
+import com.google.android.filament.LightManager
 import io.github.sceneview.SceneView
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
@@ -16,14 +18,20 @@ import io.github.sceneview.math.Scale
 import io.github.sceneview.node.Node
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
+import io.github.sceneview.node.LightNode
 import ai.joydurm.core.*
 import java.io.File
-import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.*
 
 /** SceneView owns rendering, hit testing, camera tracking, materials and GLB loading. */
 class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private val hit: (Drum)->Unit,private val status: (String)->Unit) {
-    val view: SceneView = if(ar) ARSceneView(activity,sharedLifecycle=activity.lifecycle) else SceneView(activity,sharedLifecycle=activity.lifecycle)
+    // Lifecycle destruction and view detachment can precede Activity.onDestroy.
+    // Retire our nodes/model while Filament is alive on every SceneView destruction path.
+    val view: SceneView = if(ar) object : ARSceneView(activity,sharedLifecycle=activity.lifecycle) {
+        override fun destroy() { try { destroyContent() } finally { super.destroy() } }
+    } else object : SceneView(activity,sharedLifecycle=activity.lifecycle) {
+        override fun destroy() { try { destroyContent() } finally { super.destroy() } }
+    }
     val kit=Node(view.engine)
     private var anchor: AnchorNode?=null
     private val pieces=mutableMapOf<Drum,Node>()
@@ -32,26 +40,49 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
     private val headRotation=mutableMapOf<Drum,Rotation>()
     private val headScale=mutableMapOf<Drum,Scale>()
     private var beaterRotation=Rotation()
-    private var destroyed=false
+    @Volatile private var destroyed=false
     private val bases=mutableMapOf<Drum,Position>()
-    private val pulses=mutableMapOf<Drum,Pair<Long,Float>>()
-    private val pending=ConcurrentLinkedQueue<Hit>()
+    private val timeline=HitAnimationQueue()
+    // One real Filament light is reused for every hit. Keep it outside kit: a successful
+    // GLB swap destroys the fallback subtree, and an AR anchor moves kit in world space.
+    private val hitLight=LightNode(view.engine,type=LightManager.Type.POINT,apply={
+        color(0.08f,0.45f,1f)
+        intensity(0f)
+        falloff(0.75f)
+        castShadows(false)
+    })
+    private val hatMotion=HatVisualInterpolator()
     private var imported: ModelNode?=null
     private var hatTop: Node?=null
     private var hatBase=Position()
     private var beaterNode: Node?=null
+    /** Called for layout edits and AR placement; the engine owns revision and recenter policy. */
+    var onLayoutChanged: ((Map<Drum,PiecePose>,Float,Float)->Unit)?=null
+        set(value) { field=value; if(value!=null) notifyLayoutChanged() }
+    /** Read an immutable engine snapshot on every frame, independently of UI refresh cadence. */
+    var snapshotProvider: (()->EngineSnapshot)?=null
     var openness=0f
         set(value) { require(value.isFinite()); field=value.coerceIn(0f,1f) }
     var kitScale=1f
-        set(value) { require(value.isFinite()); field=value.coerceIn(0.3f,2f) }
+        set(value) { require(value.isFinite()); val next=value.coerceIn(0.3f,2f); if(field!=next) { field=next; notifyLayoutChanged() } }
     var kitYaw=0f
-        set(value) { require(value.isFinite()); field=value.coerceIn(-360f,360f) }
+        set(value) { require(value.isFinite()); val next=value.coerceIn(-360f,360f); if(field!=next) { field=next; notifyLayoutChanged() } }
     var editMode=false
     var selected=Drum.SNARE
     var placed=!ar; private set
     private var lastTracking: TrackingState?=null
     init {
-        view.setBackgroundColor(Color.rgb(16,21,31))
+        // An Android background draws over SurfaceView's hole and hides the Filament surface.
+        // Color the existing 3D skybox instead; AR keeps its camera background untouched.
+        if(!ar) {
+            view.skybox=null
+            // Stage lighting keeps the authored material colors and gives real hit
+            // lights enough contrast; AR retains camera-driven light estimation.
+            view.mainLightNode?.intensity=20_000f
+            view.indirectLight?.intensity=6_000f
+            // Filament takes linear RGB; these values display as the UI's sRGB #080e13.
+            view.renderer.clearOptions=view.renderer.clearOptions.apply { clear=true; clearColor=floatArrayOf(0.002428216f,0.004391442f,0.006512091f,1f) }
+        }
         if(ar) {
             (view as ARSceneView).apply {
                 configureSession { _,config ->
@@ -67,10 +98,11 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
                 }
             }
         } else {
-            view.cameraNode.position=Position(0f,2.5f,3.5f)
+            view.cameraNode.position=Position(0f,2.5f,if(activity.resources.displayMetrics.heightPixels>activity.resources.displayMetrics.widthPixels)7.5f else 3.5f)
             view.cameraNode.lookAt(Position(0f,0.7f,0f))
             view.addChildNode(kit)
         }
+        view.addChildNode(hitLight)
         buildKit()
         runCatching {
             val cached=File(activity.cacheDir,"joydurm-kit.glb")
@@ -83,7 +115,7 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
                     val result=(view as ARSceneView).hitTestAR(e.x,e.y,planeTypes=setOf(Plane.Type.HORIZONTAL_UPWARD_FACING))
                     if(result==null) { status("还未识别到地面，请继续扫描"); return }
                     anchor=AnchorNode(view.engine,result.createAnchor()).also { it.isPositionEditable=false; it.addChildNode(kit); view.addChildNode(it) }
-                    placed=true; status("鼓组已固定 · 可在布局里调节方向和尺寸")
+                    placed=true; notifyLayoutChanged(); status("鼓组已固定 · 布局变化后请重新归中")
                 } else {
                     var found=node
                     while(found!=null && found.name?.startsWith("drum:")!=true) found=found.parent
@@ -91,7 +123,9 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
                 }
             }
         }
-        view.onFrame={ time -> update(time) }
+        // SceneView uses a frame clock; IMU/Hit events use Android's elapsed realtime clock.
+        // Read the latter here so suspend and UI delays cannot restart an old hit animation.
+        view.onFrame={ update(SystemClock.elapsedRealtimeNanos()) }
     }
     private fun cylinder(parent: Node,r: Float,h: Float,pos: Position,color: Int,metal: Float=0f): Node {
         val material=view.materialLoader.createColorInstance(color,metallic=metal,roughness=if(metal>0)0.3f else 0.65f)
@@ -122,19 +156,26 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
                 if(p.d!=Drum.KICK) cylinder(group,0.018f,p.p.y-p.h/2,Position(0f,-(p.p.y+p.h/2)/2,0f),chrome,0.8f)
             }
         }
-        // Kick beater: separate pivot, rotates into the rear drumhead on every kick.
-        val beater=Node(view.engine).apply { name="beater"; position=Position(0f,0.1f,0.0f) }; kit.addChildNode(beater); beaterNode=beater
+        // Keep the pivot's old world placement, but inherit the complete kick transform.
+        val beater=Node(view.engine).apply { name="beater"; position=Position(0f,-0.24f,0.38f) }; pieces.getValue(Drum.KICK).addChildNode(beater); beaterNode=beater
         cylinder(beater,0.012f,0.3f,Position(0f,0.15f,0f),chrome,0.8f)
         cylinder(beater,0.045f,0.05f,Position(0f,0.31f,0f),skin)
         captureTransforms()
     }
-    fun hit(event: Hit) { pending.add(event) }
+    fun hit(event: Hit) { if(!destroyed) timeline.offer(event) }
     private fun update(time: Long) {
-        while(true) { val event=pending.poll() ?: break; pulses[if(event.drum==Drum.CHICK)Drum.HAT else event.drum]=time to event.velocity }
+        if(destroyed) return
+        val pulses=timeline.advance(time)
+        snapshotProvider?.invoke()?.openness?.takeIf { it.isFinite() }?.let { openness=it }
         kit.scale=Scale(kitScale); kit.rotation=Rotation(0f,kitYaw,0f)
-        pulses.entries.removeAll { (drum,event) ->
-            val t=(time-event.first)/1e9
-            val strength=event.second
+        // Reset inactive pieces too, since the bounded timeline expires old pulses itself.
+        heads.forEach { (drum,head) -> if(drum !in pulses) {
+            headRotation[drum]?.let { head.rotation=it }; headScale[drum]?.let { head.scale=it }; headBase[drum]?.let { head.position=it }
+        } }
+        if(Drum.KICK !in pulses) beaterNode?.rotation=beaterRotation
+        pulses.forEach { (drum,event) ->
+            val t=event.ageSeconds(time)
+            val strength=event.velocity
             val head=heads[drum]
             if(drum in listOf(Drum.HAT,Drum.CRASH,Drum.RIDE)) head?.rotation=Rotation((headRotation[drum]?.x ?: 0f)+(sin(t*34)*exp(-t*4)*10*strength).toFloat(),headRotation[drum]?.y ?: 0f,(headRotation[drum]?.z ?: 0f)+(sin(t*25)*exp(-t*4)*5*strength).toFloat())
             else {
@@ -142,60 +183,119 @@ class DrumScene(private val activity: ComponentActivity,val ar: Boolean,private 
                 headBase[drum]?.let { p -> head?.position=Position(p.x,p.y-(sin(t*28)*exp(-t*12)*0.008*strength).toFloat(),p.z) }
             }
             if(drum==Drum.KICK) beaterNode?.rotation=Rotation(beaterRotation.x+(-sin(t*22)*exp(-t*9)*40*strength).toFloat(),beaterRotation.y,beaterRotation.z)
-            if(t>2.0) { headRotation[drum]?.let { head?.rotation=it }; headScale[drum]?.let { head?.scale=it }; headBase[drum]?.let { head?.position=it }; if(drum==Drum.KICK)beaterNode?.rotation=beaterRotation; true } else false
         }
-        hatTop?.position=Position(hatBase.x,hatBase.y+openness.coerceIn(0f,1f)*0.09f,hatBase.z)
+        hatTop?.position=Position(hatBase.x,hatBase.y+hatMotion.update(openness,time)*0.09f,hatBase.z)
+        updateHitLight(pulses,time)
+    }
+    private fun updateHitLight(pulses: Map<Drum,VisualPulse>,time: Long) {
+        // Late UI delivery does not restart a flash: envelope time comes from the hit itself.
+        // A single bounded pulse also keeps rapid playing from accumulating GPU entities.
+        val strongest=pulses.entries.filter { (drum,pulse) -> heads.containsKey(drum) && pulse.ageSeconds(time)<0.65 }
+            .maxByOrNull { (_,pulse) -> pulse.velocity*(1.0-pulse.ageSeconds(time)/0.65).pow(2) }
+        if(strongest==null || (ar && !placed)) { hitLight.intensity=0f; return }
+        val (drum,pulse)=strongest
+        val head=heads.getValue(drum)
+        // Use the current transformed head, including kit scaling/yaw and any AR anchor.
+        // The small local offset follows a kick's rotated front head as well as horizontal skins.
+        hitLight.worldPosition=head.getWorldPosition(Position(0f,0.20f,0f))
+        val warm=drum in listOf(Drum.HAT,Drum.CRASH,Drum.RIDE)
+        view.engine.lightManager.setColor(hitLight.lightInstance,if(warm)1f else 0.005f,if(warm)0.54f else 0.08f,if(warm)0.16f else 1f)
+        val envelope=(1.0-pulse.ageSeconds(time)/0.65).coerceIn(0.0,1.0).pow(2)
+        hitLight.intensity=(300_000.0*pulse.velocity*envelope).toFloat()
     }
     fun setPiecePosition(drum: Drum,x: Float,y: Float,z: Float) {
         require(x.isFinite() && y.isFinite() && z.isFinite()) { "鼓件坐标无效" }
         val position=Position(x,y,z)
-        pieces[drum]?.position=position; bases[drum]=position
-        if(heads[drum]===pieces[drum]) { headBase[drum]=position; if(drum==Drum.HAT)hatBase=position }
+        val piece=pieces[drum] ?: return
+        // Public layout coordinates belong to kit, even when a GLB inserts transform groups.
+        piece.worldPosition=kit.getWorldPosition(position); bases[drum]=position
+        if(heads[drum]===piece) { headBase[drum]=piece.position; if(drum==Drum.HAT)hatBase=piece.position }
+        notifyLayoutChanged()
     }
     fun piecePosition(drum: Drum)=bases[drum] ?: Position()
+    fun layoutPieces(): Map<Drum,PiecePose> = bases.mapValues { (_,p) -> PiecePose(p.x,p.y,p.z) }.toMap()
+    private fun notifyLayoutChanged() { if(!destroyed) onLayoutChanged?.invoke(layoutPieces(),kitScale,kitYaw) }
     fun resetPlacement() {
         anchor?.removeChildNode(kit); anchor?.let { view.removeChildNode(it); it.destroy() }; anchor=null
         placed=!ar; if(!ar && kit.parent==null) view.addChildNode(kit)
+        notifyLayoutChanged()
     }
-    /** Import a GLB containing individually named drum roots. Strict mapping prevents a static model pretending to animate. */
-    fun importModel(file: File) {
-        val node=ModelNode(view.modelLoader.createModelInstance(file),autoAnimate=false)
-        val required=Drum.entries.filter { it!=Drum.CHICK }
-        val mapping=required.associateWith { d -> node.nodes.firstOrNull { it.name.equals(d.name,true) } }
-        val roots=mapping.values.filterNotNull().toSet()
-        val valid=mapping.all { (d,n) -> n!=null && node.nodes.count { it.name.equals(d.name,true) }==1 } &&
-            roots.all { root -> var parent=root.parent; var independent=true; while(parent!=null) { if(parent in roots)independent=false; parent=parent.parent }; independent } &&
-            node.nodes.all { n -> listOf(n.position.x,n.position.y,n.position.z,n.rotation.x,n.rotation.y,n.rotation.z,n.scale.x,n.scale.y,n.scale.z).all { it.isFinite() } }
-        if(!valid) { view.modelLoader.destroyModel(node.model); error("GLB 需包含唯一且互不嵌套的 kick / snare / tom1 / tom2 / floor / hat / crash / ride 节点，坐标须为有限数字") }
-        imported?.let { kit.removeChildNode(it); view.modelLoader.destroyModel(it.model) }
-        if(imported==null) kit.childNodes.toList().forEach { destroyTree(it) }
-        pieces.clear(); bases.clear(); heads.clear(); headBase.clear(); headRotation.clear(); headScale.clear(); hatTop=null; pulses.clear()
-        imported=node; kit.addChildNode(node)
-        mapping.forEach { (d,n) ->
-            n!!.name="drum:${d.name}"; pieces[d]=n; bases[d]=n.position
-            val suffix=if(d in listOf(Drum.HAT,Drum.CRASH,Drum.RIDE))"_cymbal" else "_head"
-            heads[d]=node.nodes.firstOrNull { candidate ->
-                var parent=candidate.parent; var descendant=false
-                while(parent!=null) { if(parent===n)descendant=true; parent=parent.parent }
-                candidate.name.equals(d.name+suffix,true) && descendant
-            } ?: n
-            headBase[d]=heads[d]!!.position
+    /** Worker prepares immutable bytes; this main-thread step allocates and publishes GPU resources. */
+    fun importModel(file: File, validated: PreparedGlb?=null) {
+        check(!destroyed) { "场景已退出，取消模型导入" }
+        val prepared=validated ?: GlbValidator.prepare(file)
+        // No unchecked disk read or external-resource resolver reaches the GPU.
+        // Own the asset before loading resources, so a decoder exception can also retire it.
+        val model=view.modelLoader.assetLoader.createAsset(prepared.buffer()) ?: error("GLB GPU 解析失败")
+        var candidate: ModelNode?=null
+        var previous: ModelNode?=null
+        var previousFallback: List<Node> = emptyList()
+        try {
+            view.modelLoader.resourceLoader.loadResources(model)
+            val node=ModelNode(model.instance,autoAnimate=false).also { candidate=it }
+            val required=Drum.entries.filter { it!=Drum.CHICK }
+            val mapping=required.associateWith { d -> node.nodes.singleOrNull { it.name.equals(d.name,true) }
+                ?: error("GPU 模型缺少唯一 ${d.name} 节点") }
+            val roots=mapping.values.toSet()
+            require(roots.all { root -> var parent=root.parent; var independent=true
+                while(parent!=null) { if(parent in roots)independent=false; parent=parent.parent }; independent } &&
+                node.nodes.all { n -> listOf(n.position.x,n.position.y,n.position.z,n.rotation.x,n.rotation.y,n.rotation.z,n.scale.x,n.scale.y,n.scale.z).all { it.isFinite() } }) { "GLB GPU 节点结构或变换无效" }
+            val newHeads=mapping.mapValues { (d,n) ->
+                val suffix=if(d in listOf(Drum.HAT,Drum.CRASH,Drum.RIDE))"_cymbal" else "_head"
+                node.nodes.firstOrNull { it.name.equals(d.name+suffix,true) && descendantOf(it,n) } ?: n
+            }
+            // Candidate is unattached: its world coordinates are exactly its future kit-local coordinates.
+            val newBases=mapping.mapValues { (_,n) -> n.worldPosition }
+            val newBeater=node.nodes.firstOrNull { it.name.equals("beater",true) }
+            require(newBeater==null || descendantOf(newBeater,mapping.getValue(Drum.KICK))) { "beater 必须跟随 kick" }
+            val newHeadBase=newHeads.mapValues { (_,n) -> n.position }
+            val newHeadRotation=newHeads.mapValues { (_,n) -> n.rotation }
+            val newHeadScale=newHeads.mapValues { (_,n) -> n.scale }
+            val newHatBase=newHeads[Drum.HAT]?.position ?: Position()
+            val newBeaterRotation=newBeater?.rotation ?: Rotation()
+            // Candidate is fully ready before any live resource or transform is changed.
+            mapping.forEach { (d,n) -> n.name="drum:${d.name}" }
+            previous=imported
+            previousFallback=if(previous==null)kit.childNodes.toList() else emptyList()
+            kit.addChildNode(node)
+            pieces.clear(); pieces.putAll(mapping); bases.clear(); bases.putAll(newBases)
+            heads.clear(); heads.putAll(newHeads); headBase.clear(); headBase.putAll(newHeadBase)
+            headRotation.clear(); headRotation.putAll(newHeadRotation); headScale.clear(); headScale.putAll(newHeadScale)
+            hatTop=heads[Drum.HAT]; hatBase=newHatBase; beaterNode=newBeater; beaterRotation=newBeaterRotation
+            timeline.clear(); hitLight.intensity=0f; imported=node; candidate=null
+        } catch(error: Throwable) {
+            // Do not remove the current model on a candidate validation/load failure.
+            candidate?.let { kit.removeChildNode(it) }
+            view.modelLoader.destroyModel(model)
+            throw error
         }
-        hatTop=heads[Drum.HAT]; hatBase=hatTop?.position ?: Position()
-        beaterNode=node.nodes.firstOrNull { it.name=="beater" }
-        captureTransforms()
+        // Resource retirement happens after publication and cannot turn a successful swap into
+        // an import failure (which would make the activity delete its new persistent model file).
+        runCatching {
+            previous?.let { kit.removeChildNode(it); view.modelLoader.destroyModel(it.model) }
+            previousFallback.forEach(::destroyTree)
+        }.onFailure { status("模型已加载；旧资源清理异常：${it.message}") }
+        notifyLayoutChanged()
+    }
+    private fun descendantOf(node: Node,root: Node): Boolean {
+        var parent=node.parent
+        while(parent!=null) { if(parent===root)return true; parent=parent.parent }
+        return false
     }
     private fun captureTransforms() {
         heads.forEach { (d,n) -> headBase[d]=n.position; headRotation[d]=n.rotation; headScale[d]=n.scale }
         hatBase=hatTop?.position ?: Position(); beaterRotation=beaterNode?.rotation ?: Rotation()
     }
     private fun destroyTree(node: Node) { node.childNodes.toList().forEach(::destroyTree); node.destroy() }
-    fun destroy() {
+    fun destroy() = view.destroy()
+    private fun destroyContent() {
         if(destroyed)return
-        destroyed=true; view.onFrame=null; pending.clear()
+        destroyed=true; view.onFrame=null; timeline.close(); snapshotProvider=null; onLayoutChanged=null
+        (view as? ARSceneView)?.apply { onSessionUpdated=null; onSessionFailed=null }
+        view.removeChildNode(hitLight); hitLight.destroy()
         anchor?.let { view.removeChildNode(it); it.removeChildNode(kit); it.destroy() }; anchor=null
         view.removeChildNode(kit)
         imported?.let { kit.removeChildNode(it); view.modelLoader.destroyModel(it.model) }; imported=null
-        destroyTree(kit); view.destroy()
+        destroyTree(kit)
     }
 }

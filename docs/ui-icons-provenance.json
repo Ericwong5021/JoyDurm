@@ -1,0 +1,113 @@
+{
+  "source": "google/material-design-icons",
+  "commit": "bd8cb85bd4bad964fe6918f79665bb40c3a8efef",
+  "license": "Apache-2.0",
+  "licenseEvidence": "docs/MATERIAL-ICONS-LICENSE.txt",
+  "icons": [
+    {
+      "name": "back",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/navigation/arrow_back/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "5eab5a4557e97143f2166479366672a76bbc31d805be62efa75c7d1a10e13cf2",
+      "vectorSha256": "dba09eac0d167a74520e81a35ae616b5482dfb075c9e706ab8e567b2f8f5f9e8",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "settings",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/action/settings/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "814b7a6eea050c073d4a8d7b1f72512b0bd4f71b33beb584c8063fb0bfa78d41",
+      "vectorSha256": "c4508e449244dc113ae8cb77893906540511f1f90776a289027004a1cdcf0da6",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "devices",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/hardware/gamepad/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "d76fd5b77a7415abe4710fd36b782ba6f396b04c51a0ee26684bf5d77b050b75",
+      "vectorSha256": "400a25151345e8f7f33eedfc1a8a395030a8de81be1242aaff568791ab6d7ba6",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "kit",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/av/library_music/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "05d8652be87200127cde0cc851058c8191fc448f606eaba1786e8a080ef6018a",
+      "vectorSha256": "f66620979f062bd0769668c54d00a3ae1c98ea54e787ab323187c1fbf08c47ca",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "check",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/navigation/check/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "e7bd57a6f37125b7363cfc9fb11f8c1dc9aec12003c94e96329d1cca5c11d8f8",
+      "vectorSha256": "50caaca7e01f6e7039bbe25f3f7d546540caadd24b81f66ab56a46f2d2ab8991",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "close",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/navigation/close/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "817eeece6e725ef03c5be0b0ade63c53506d6f8678684dd41eb0c0deaae3ac7b",
+      "vectorSha256": "81b8fa6cc16e59f3dc47042b4b81e81a374962452214b2b1f5b193c6c605dce9",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "play",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/av/play_arrow/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "d9a74a4c94f74d39adb1b519afe7e3569c59c72eacd56817644f691a9c68449a",
+      "vectorSha256": "61a4226ced4ff2e07f1658eb95545b613fac2b5994ce7c00c33b995530ecf834",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "pause",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/av/pause/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "777f7140fb9403ece787bdbf37e1ef5d91908bb5c9ed5428949d607e51aec3ae",
+      "vectorSha256": "9a452ac6065be240a1df2ec486c8bf1d5316f9e01be94ba932d15f658f91323a",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "refresh",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/navigation/refresh/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "b9b1959396d3635730ce003f1f24bcc8f6d3f64a01b28ac7c156a05460503b52",
+      "vectorSha256": "01b9e6636c202a73ef1adf4c9d23a9deca4b937f84b48b408655b33334ba21c0",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "bluetooth",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/device/bluetooth/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "b0319ceb6b6445154db8446c7e5888c2688e74986e10f690b526fea10e139185",
+      "vectorSha256": "8df2d662cd114c3665c73ec004eb8c9f1506fd5aa7208c3cbf3f3f6b26614895",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "volume",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/av/volume_up/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "4d013468caffb6895072aab2d54c155a34404bda2fe13d9e1a86ba50919998fe",
+      "vectorSha256": "313046a97162c6cd60ee87a34f1fe25be79f85f3a8d5f4826789b12d71f34994",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "tune",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/image/tune/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "f8e07b768e504bf5fe300e1b588532d5abd6e38dc7f06de8cef660946a75747d",
+      "vectorSha256": "1258027d20a7f9bcb8428c48a1e469f87f0ef51db057814e51c75c1245262008",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "help",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/action/help_outline/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "306a505fbf28459fa061d30c66724ab79a52e40c50c89e88dbe89372e954f4ae",
+      "vectorSha256": "ffcc49af9d655701349414f2c9a85bf220bc3b0f5554ccbbcf2419db130cc3c3",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "chevron",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/navigation/chevron_right/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "dd80108de070d899de9b4ce1ae7c80a459e5d9ef21d9c4aae4528afcddcf9895",
+      "vectorSha256": "bea5c76b3ac09ddab7bd1b989e67dadf013526d010e5f9886841e37ac2500245",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    },
+    {
+      "name": "record",
+      "source": "https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/src/av/fiber_manual_record/materialiconsoutlined/24px.svg",
+      "upstreamSvgSha256": "39d2cd2498e4d0be3919477ce5358c9eb8d221cdf9bc77ae55c6369d4c85c409",
+      "vectorSha256": "348d41859465a80c9cd0a751741623cdd087d7ebe1f8a185e93db618ee87cc2f",
+      "modification": "SVG path converted to Android VectorDrawable; tint at runtime"
+    }
+  ]
+}

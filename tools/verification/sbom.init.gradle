@@ -1,0 +1,56 @@
+// Resolve the actual runtime artifacts after Android configuration, without adding a plugin.
+import groovy.json.JsonOutput
+import java.security.MessageDigest
+
+gradle.projectsEvaluated {
+    def app = gradle.rootProject.findProject(':app')
+    app.tasks.register('exportRuntimeSbom') {
+        doLast {
+            def configuration = app.configurations.getByName('debugRuntimeClasspath')
+            def resolution = configuration.incoming.resolutionResult
+            def appRef = "pkg:generic/joydurm@${app.android.defaultConfig.versionName}"
+            def artifacts = configuration.resolvedConfiguration.resolvedArtifacts
+            def components = artifacts.collect { artifact ->
+                def id = artifact.moduleVersion.id
+                def ref = "pkg:maven/${id.group}/${id.name}@${id.version}"
+                def digest = MessageDigest.getInstance('SHA-256').digest(artifact.file.bytes).encodeHex().toString()
+                [type: 'library', 'bom-ref': ref, group: id.group, name: id.name, version: id.version,
+                 purl: ref, hashes: [[alg: 'SHA-256', content: digest]],
+                 properties: [[name: 'joydurm:artifact', value: artifact.file.name],
+                              [name: 'joydurm:license-review', value: 'See NOTICE and docs/DELIVERY.md; absent SPDX license is unresolved, not permission']]]
+            }.unique { it['bom-ref'] }.sort { it['bom-ref'] }
+            // KMP metadata and BOM/platform modules can have dependency edges but no packaged artifact.
+            def present = components.collect { it['bom-ref'] }.toSet()
+            resolution.allComponents.findAll { it.id != resolution.root.id && it.moduleVersion }.each { component ->
+                def id = component.moduleVersion
+                def ref = "pkg:maven/${id.group}/${id.name}@${id.version}"
+                if (!present.contains(ref)) {
+                    components.add([type: 'library', 'bom-ref': ref, group: id.group, name: id.name,
+                                    version: id.version, purl: ref, properties: [[name: 'joydurm:artifact',
+                                    value: 'Resolved metadata/platform component; no packaged runtime artifact']]])
+                    present.add(ref)
+                }
+            }
+            components.sort { it['bom-ref'] }
+            def edges = resolution.allComponents.collect { component ->
+                def id = component.moduleVersion
+                def ref = component.id == resolution.root.id ? appRef : (id ? "pkg:maven/${id.group}/${id.name}@${id.version}" : null)
+                if (!ref) return null
+                [ref: ref, dependsOn: component.dependencies.findAll {
+                    it instanceof org.gradle.api.artifacts.result.ResolvedDependencyResult && it.selected.moduleVersion
+                }.collect {
+                    def selected = it.selected.moduleVersion
+                    "pkg:maven/${selected.group}/${selected.name}@${selected.version}"
+                }.sort()]
+            }.findAll { it != null }.sort { it.ref }
+            def bom = [bomFormat: 'CycloneDX', specVersion: '1.5', version: 1,
+                       metadata: [component: [type: 'application', 'bom-ref': appRef, name: 'JoyDurm', version: app.android.defaultConfig.versionName],
+                                  properties: [[name: 'joydurm:source-sha', value: System.getenv('GITHUB_SHA') ?: 'LOCAL_UNCOMMITTED']]],
+                       components: components, dependencies: edges]
+            def output = new File(app.buildDir, 'reports/sbom/runtime.cdx.json')
+            output.parentFile.mkdirs()
+            output.text = JsonOutput.prettyPrint(JsonOutput.toJson(bom)) + '\n'
+            println("Wrote ${components.size()} resolved runtime components to ${output}")
+        }
+    }
+}
