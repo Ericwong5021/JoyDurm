@@ -46,7 +46,9 @@ def preflight(output, checks=30, interval=2, stable_checks=6):
         consecutive = 0
         for index in range(checks):
             anr = capture('preflight-last-anr.txt', ['shell', 'dumpsys', 'activity', 'lastanr'])
-            windows = capture('preflight-windows.txt', ['shell', 'dumpsys', 'window', 'windows'])
+            # Android35 keeps mCurrentFocus/mFocusedApp in DisplayContent, not
+            # the per-window section. Keep the actual display snapshot as evidence.
+            windows = capture('preflight-windows.txt', ['shell', 'dumpsys', 'window', 'displays'])
             boot = capture('preflight-boot.txt', ['shell', 'getprop', 'sys.boot_completed'])
             ready = inspect_state(anr, windows, boot, home)
             consecutive = consecutive + 1 if ready else 0

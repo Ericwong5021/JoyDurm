@@ -40,7 +40,7 @@ class AndroidPreflightTest(unittest.TestCase):
         def adb(command, **kwargs):
             data = ('home/com.test.Home' if 'resolve-activity' in command else
                     self.clean if 'lastanr' in command else
-                    self.windows if 'windows' in command else '1')
+                    self.windows if 'displays' in command else '1')
             return subprocess.CompletedProcess(command, 0, data.encode(), b'')
         with tempfile.TemporaryDirectory() as directory, patch('android_preflight.subprocess.run', side_effect=adb), patch('android_preflight.time.sleep') as sleep:
             preflight(directory)
